@@ -1,0 +1,195 @@
+"""Tests for scripts/prazo_calculator.py"""
+
+import sys
+import os
+from datetime import date
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+from prazo_calculator import (
+    load_feriados,
+    is_recesso,
+    is_business_day,
+    next_business_day,
+    calculate_prazo,
+    get_standard_prazo,
+    check_prazo_status,
+)
+
+
+class TestLoadFeriados:
+    def test_loads_national_holidays(self):
+        feriados = load_feriados(year=2025)
+        # Tiradentes
+        assert date(2025, 4, 21) in feriados
+        # Christmas
+        assert date(2025, 12, 25) in feriados
+        # Natal
+        assert date(2025, 12, 25) in feriados
+
+    def test_loads_mobile_holidays(self):
+        feriados = load_feriados(year=2025)
+        # Easter 2025 = April 20. Sexta-feira Santa = Easter - 2 = April 18
+        assert date(2025, 4, 18) in feriados
+        # Carnaval terça = Easter - 47 = March 4
+        assert date(2025, 3, 4) in feriados
+
+    def test_loads_state_holidays(self):
+        feriados = load_feriados(state='SP', year=2025)
+        # Revolução Constitucionalista de 1932
+        assert date(2025, 7, 9) in feriados
+
+    def test_no_state(self):
+        feriados = load_feriados(year=2025)
+        # SP holiday should NOT be in national-only set
+        assert date(2025, 7, 9) not in feriados
+
+
+class TestIsRecesso:
+    def test_dec_20_is_recesso(self):
+        assert is_recesso(date(2025, 12, 20)) is True
+
+    def test_dec_31_is_recesso(self):
+        assert is_recesso(date(2025, 12, 31)) is True
+
+    def test_jan_1_is_recesso(self):
+        assert is_recesso(date(2026, 1, 1)) is True
+
+    def test_jan_20_is_recesso(self):
+        assert is_recesso(date(2026, 1, 20)) is True
+
+    def test_jan_21_not_recesso(self):
+        assert is_recesso(date(2026, 1, 21)) is False
+
+    def test_dec_19_not_recesso(self):
+        assert is_recesso(date(2025, 12, 19)) is False
+
+    def test_june_not_recesso(self):
+        assert is_recesso(date(2025, 6, 15)) is False
+
+
+class TestIsBusinessDay:
+    def test_weekday(self):
+        # 2025-03-17 is Monday
+        assert is_business_day(date(2025, 3, 17), set()) is True
+
+    def test_saturday(self):
+        assert is_business_day(date(2025, 3, 15), set()) is False
+
+    def test_sunday(self):
+        assert is_business_day(date(2025, 3, 16), set()) is False
+
+    def test_holiday(self):
+        feriados = {date(2025, 4, 21)}  # Tiradentes
+        assert is_business_day(date(2025, 4, 21), feriados) is False
+
+    def test_recesso(self):
+        assert is_business_day(date(2025, 12, 22), set()) is False  # Monday in recesso
+
+
+class TestNextBusinessDay:
+    def test_already_business_day(self):
+        assert next_business_day(date(2025, 3, 17), set()) == date(2025, 3, 17)
+
+    def test_saturday_to_monday(self):
+        assert next_business_day(date(2025, 3, 15), set()) == date(2025, 3, 17)
+
+    def test_holiday_to_next(self):
+        feriados = {date(2025, 4, 21)}  # Monday Tiradentes
+        assert next_business_day(date(2025, 4, 21), feriados) == date(2025, 4, 22)
+
+
+class TestCalculatePrazo:
+    def test_15_dias_uteis_from_monday(self):
+        # 2025-03-17 is Monday. 15 business days = 3 full weeks = April 7 (Monday)
+        feriados: set[date] = set()
+        result = calculate_prazo(date(2025, 3, 17), 15, 'úteis', feriados)
+        assert result == date(2025, 4, 7)
+
+    def test_15_dias_uteis_with_holiday(self):
+        # Same but with a holiday in the middle (e.g., April 21 Tiradentes)
+        # Start: 2025-04-01 (Tuesday). 15 business days with April 21 being holiday
+        feriados = {date(2025, 4, 21)}
+        result = calculate_prazo(date(2025, 4, 1), 15, 'úteis', feriados)
+        # Without holiday: April 22. With holiday: April 23
+        assert result == date(2025, 4, 23)
+
+    def test_5_dias_uteis_embargos(self):
+        # 2025-03-17 (Monday). 5 business days = March 24 (Monday)
+        result = calculate_prazo(date(2025, 3, 17), 5, 'úteis', set())
+        assert result == date(2025, 3, 24)
+
+    def test_across_weekend(self):
+        # Start Friday. 1 business day = next Monday
+        result = calculate_prazo(date(2025, 3, 14), 1, 'úteis', set())  # Friday
+        assert result == date(2025, 3, 17)  # Monday
+
+    def test_corridos(self):
+        # 15 calendar days from March 17 = April 1
+        result = calculate_prazo(date(2025, 3, 17), 15, 'corridos', set())
+        assert result == date(2025, 4, 1)
+
+    def test_corridos_ends_on_weekend_extends(self):
+        # 10 calendar days from March 17 = March 27 (Thursday) — business day
+        result = calculate_prazo(date(2025, 3, 17), 10, 'corridos', set())
+        assert result == date(2025, 3, 27)
+
+    def test_recesso_suspension(self):
+        # Start Dec 15 (before recesso). 5 business days.
+        # Dec 16 (Tue), 17 (Wed), 18 (Thu), 19 (Fri) = 4 days.
+        # Dec 20 onwards = recesso. Resumes Jan 21.
+        # Jan 21 (Wed) = 5th business day.
+        result = calculate_prazo(date(2025, 12, 15), 5, 'úteis', set())
+        assert result == date(2026, 1, 21)
+
+    def test_suspended_range(self):
+        # Suspend March 20-25
+        suspended = [(date(2025, 3, 20), date(2025, 3, 25))]
+        result = calculate_prazo(date(2025, 3, 17), 5, 'úteis', set(), suspended)
+        # March 18 (1), 19 (2), skip 20-25, 26 (3), 27 (4), 28 (5)
+        assert result == date(2025, 3, 28)
+
+
+class TestGetStandardPrazo:
+    def test_contestacao(self):
+        p = get_standard_prazo('contestação')
+        assert p is not None
+        assert p['dias'] == 15
+        assert p['unidade'] == 'úteis'
+
+    def test_apelacao(self):
+        p = get_standard_prazo('apelação')
+        assert p is not None
+        assert p['dias'] == 15
+
+    def test_embargos(self):
+        p = get_standard_prazo('embargos_declaração')
+        assert p is not None
+        assert p['dias'] == 5
+
+    def test_unknown(self):
+        assert get_standard_prazo('xyz_inexistente') is None
+
+
+class TestCheckPrazoStatus:
+    def test_em_prazo(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+        )
+        assert result is not None
+        assert result['status'] == 'em_prazo'
+        assert result['dias_restantes'] is not None
+        assert result['dias_restantes'] > 0
+
+    def test_vencido(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 1, 6),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 1),
+        )
+        assert result is not None
+        assert result['status'] == 'vencido'
+        assert result['dias_restantes'] is None
