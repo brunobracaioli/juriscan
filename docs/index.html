@@ -54,7 +54,7 @@
       margin-bottom: 1.5rem;
     }
 
-    .qr-container canvas {
+    .qr-container img {
       display: block;
       width: 220px;
       height: 220px;
@@ -125,7 +125,12 @@
     <div class="subtitle">Análise forense de processos judiciais</div>
 
     <div class="qr-container">
-      <canvas id="qr"></canvas>
+      <img
+        src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=00020126660014br.gov.bcb.pix0114437732940001050226Apoio%20JuriScan%20open-source5204000053039865802BR5925BRACAIOLI%20TECNOLOGIA%20EMPR6002NA62290525174b2a17ad5f4844bjuriscan6304B50C"
+        alt="QR Code Pix"
+        width="220"
+        height="220"
+      />
     </div>
 
     <p class="description">
@@ -147,25 +152,15 @@
     <a href="https://github.com/brunobracaioli/juriscan#instalação">Instalar skill</a>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
   <script>
-    const PIX_PAYLOAD = '00020126660014br.gov.bcb.pix0114437732940001050226Apoio JuriScan open-source5204000053039865802BR5925BRACAIOLI TECNOLOGIA EMPR6002NA62290525174b2a17ad5f4844bjuriscan6304B50C';
-
-    new QRious({
-      element: document.getElementById('qr'),
-      value: PIX_PAYLOAD,
-      size: 220,
-      level: 'M',
-      background: '#ffffff',
-      foreground: '#0a0e1a',
-    });
+    var PIX_PAYLOAD = '00020126660014br.gov.bcb.pix0114437732940001050226Apoio JuriScan open-source5204000053039865802BR5925BRACAIOLI TECNOLOGIA EMPR6002NA62290525174b2a17ad5f4844bjuriscan6304B50C';
 
     function copyPix() {
-      navigator.clipboard.writeText(PIX_PAYLOAD).then(() => {
-        const btn = document.getElementById('copyBtn');
+      navigator.clipboard.writeText(PIX_PAYLOAD).then(function() {
+        var btn = document.getElementById('copyBtn');
         btn.textContent = 'Copiado!';
         btn.classList.add('copied');
-        setTimeout(() => {
+        setTimeout(function() {
           btn.textContent = 'Copiar chave Pix';
           btn.classList.remove('copied');
         }, 2500);
