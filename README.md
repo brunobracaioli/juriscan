@@ -56,19 +56,25 @@ Sem `poppler-utils`, a extração usa `pypdf` como fallback. Sem `tesseract`, PD
 
 ## Uso
 
-### Via Claude Code (recomendado)
+### Quick Run (um comando)
 
-Após instalar, basta pedir naturalmente:
+No Claude Code, com o PDF em qualquer pasta:
+
+```
+/juriscan ~/Downloads/processo.pdf
+```
+
+O Claude executa o pipeline completo automaticamente (extração → chunking → análise → contradições → prazos → risco → Obsidian) e apresenta o resultado.
+
+### Linguagem natural
+
+A skill também ativa quando você pede naturalmente:
 
 > *"Analise este processo e mapeie as contradições"*
 >
 > *"Calcule os prazos deste processo"*
 >
-> *"Exporte a análise para Obsidian"*
->
 > *"Quais argumentos foram reformados em segunda instância?"*
-
-O Claude ativa a skill automaticamente e executa o pipeline completo.
 
 ### Via linha de comando
 
