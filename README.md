@@ -16,6 +16,30 @@
 
 ---
 
+## O que é?
+
+Um processo judicial pode ter centenas de páginas: petição, contestação, réplica, sentença, recurso... Um advogado levaria dias lendo tudo, cruzando informações e procurando inconsistências.
+
+O **JuriScan** faz isso em minutos. Você joga o PDF do processo e recebe:
+
+- **Separação automática** de cada peça processual (27 tipos detectados)
+- **Mapa de contradições** entre o que autor e réu disseram
+- **Prazos calculados** com feriados forenses e recesso (CPC Art. 219-232)
+- **Rastreamento de argumentos** — o que foi aceito, rejeitado ou reformado em cada instância
+- **Nota de risco** do caso (processual, mérito e exposição monetária)
+- **Vault Obsidian** navegável com links entre peças, leis e jurisprudência
+
+### Para quem é?
+
+| Perfil | Como usa |
+|---|---|
+| **Advogado** | Análise rápida de processos grandes, preparação de peças, due diligence |
+| **Escritório** | Padronização de análise forense, onboarding de casos novos |
+| **Departamento jurídico** | Triagem de riscos, acompanhamento de prazos, auditoria processual |
+| **Estudante de Direito** | Estudo de casos reais com estrutura visual |
+
+---
+
 ## Instalação
 
 ### Clone e instale (uma vez)
