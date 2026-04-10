@@ -12,6 +12,12 @@ Quando o usuário invocar `/juriscan <caminho_do_pdf>` ou pedir para analisar um
 
 Se o usuário não passar um caminho, pergunte: "Qual o caminho do PDF do processo?"
 
+**CWD check:** Se `pwd` apontar para `*/.claude/skills/juriscan*` (ou seja, a sessão do Claude foi iniciada dentro do diretório da própria skill), avise o usuário:
+
+> "Você iniciou o Claude Code dentro do diretório da skill (`~/.claude/skills/juriscan`). Skills são globais — o normal é rodar o Claude na pasta do seu projeto, onde estão os PDFs. Saia desta sessão, faça `cd` para a pasta do processo e rode `claude` de novo. Posso continuar aqui mesmo assim se você passar o caminho absoluto do PDF."
+
+Prossiga apenas se o usuário insistir ou fornecer caminho absoluto.
+
 **Fluxo completo automático:**
 
 1. Resolver `SKILL_DIR` e garantir dependências (Setup)

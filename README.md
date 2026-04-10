@@ -48,7 +48,10 @@ O **JuriScan** faz isso em minutos. Você joga o PDF do processo e recebe:
 git clone https://github.com/brunobracaioli/juriscan.git ~/.claude/skills/juriscan
 cd ~/.claude/skills/juriscan
 ./install.sh
+cd -   # volta para o diretório anterior — NÃO rode o claude de dentro da skill
 ```
+
+> **Importante:** depois de instalar, **saia do diretório da skill**. Skills do Claude Code ficam disponíveis globalmente — você roda `claude` na pasta do **seu projeto** (onde estão os PDFs), não dentro de `~/.claude/skills/juriscan`. Se você iniciar o Claude dentro da pasta da skill, ele não vai enxergar os arquivos do seu projeto.
 
 <details>
 <summary><b>Opção alternativa:</b> clonar em qualquer lugar</summary>
