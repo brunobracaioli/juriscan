@@ -7,3 +7,4 @@ dist/
 build/
 .env
 .claude/
+qr-code.png
