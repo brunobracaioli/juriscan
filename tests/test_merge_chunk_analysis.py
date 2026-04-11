@@ -367,6 +367,102 @@ def test_merge_multiple_split_children_alphabetical_order(tmp_path):
     assert tipos == ["LAUDO PERICIAL", "SENTENÇA", "APELAÇÃO", "CONTRARRAZÕES"]
 
 
+def test_merge_split_semantic_inherits_primary_date_from_parent(tmp_path):
+    """v3.1.2 fix: split-semantic children inherit primary_date from parent
+    when not specified in their own analysis file."""
+    skel = {
+        "analysis_version": "2.0",
+        "chunks": [
+            {
+                "index": 2,
+                "label": "LAUDO",
+                "char_count": 500,
+                "chunk_file": "chunks/02.txt",
+                "primary_date": "30/09/2024",
+                "dates_found": ["30/09/2024", "15/09/2024"],
+            },
+        ],
+    }
+    _write_analysis(tmp_path, "02", {"index": 2, "tipo_peca": "LAUDO PERICIAL"})
+    # Child has no primary_date of its own
+    _write_analysis(tmp_path, "02a", {"index": "2a", "tipo_peca": "SENTENÇA"})
+
+    found = discover_analysis_files(tmp_path)
+    merged, errors = merge(skel, found, _load_schema())
+
+    assert errors == []
+    assert len(merged["chunks"]) == 2
+    # Parent keeps its own date
+    assert merged["chunks"][0]["primary_date"] == "30/09/2024"
+    # Child inherits parent's date
+    assert merged["chunks"][1]["primary_date"] == "30/09/2024"
+    assert merged["chunks"][1]["dates_found"] == ["30/09/2024", "15/09/2024"]
+
+
+def test_merge_split_semantic_override_primary_date(tmp_path):
+    """v3.1.2 fix: when split-semantic child specifies its own primary_date,
+    it overrides the parent's inherited date. This is the CORRECT usage
+    since each piece typically has its own date."""
+    skel = {
+        "analysis_version": "2.0",
+        "chunks": [
+            {
+                "index": 2,
+                "label": "LAUDO",
+                "char_count": 500,
+                "chunk_file": "chunks/02.txt",
+                "primary_date": "30/09/2024",
+            },
+        ],
+    }
+    _write_analysis(tmp_path, "02", {"index": 2, "tipo_peca": "LAUDO PERICIAL"})
+    _write_analysis(tmp_path, "02a", {
+        "index": "2a",
+        "tipo_peca": "SENTENÇA",
+        "primary_date": "12/12/2024",  # override!
+    })
+    _write_analysis(tmp_path, "02b", {
+        "index": "2b",
+        "tipo_peca": "APELAÇÃO",
+        "primary_date": "15/01/2025",
+    })
+
+    found = discover_analysis_files(tmp_path)
+    merged, errors = merge(skel, found, _load_schema())
+
+    assert errors == []
+    assert merged["chunks"][0]["primary_date"] == "30/09/2024"  # laudo keeps
+    assert merged["chunks"][1]["primary_date"] == "12/12/2024"  # sentença overrides
+    assert merged["chunks"][2]["primary_date"] == "15/01/2025"  # apelação overrides
+
+
+def test_merge_numeric_chunk_can_override_primary_date(tmp_path):
+    """Even non-split chunks can override primary_date if the analysis file
+    is more specific than what extract_and_chunk inferred."""
+    skel = {
+        "analysis_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "label": "DESPACHO",
+                "char_count": 500,
+                "chunk_file": "chunks/00.txt",
+                "primary_date": "01/01/2024",  # wrong inference
+            },
+        ],
+    }
+    _write_analysis(tmp_path, "00", {
+        "index": 0,
+        "tipo_peca": "DESPACHO",
+        "primary_date": "20/07/2024",  # correct
+    })
+
+    found = discover_analysis_files(tmp_path)
+    merged, _errors = merge(skel, found, _load_schema())
+
+    assert merged["chunks"][0]["primary_date"] == "20/07/2024"
+
+
 def test_merge_output_passes_integer_index_contract(tmp_path):
     """Regression test for the v3.1.0-legacy bug: schema_validator.py
     (output_schema_v2.json) requires integer indices. The output of

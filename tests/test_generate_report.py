@@ -13,6 +13,9 @@ from generate_report import (  # noqa: E402
     _blockquote,
     _escape_md,
     _escape_table_cell,
+    _factor_to_text,
+    _find_valor_causa,
+    _truncate_words,
     build_report,
     main,
     render_alerts,
@@ -203,6 +206,162 @@ def test_escape_table_cell_escapes_pipe():
 def test_escape_table_cell_truncates():
     long = "x" * 300
     assert len(_escape_table_cell(long)) <= 200
+
+
+# ---------- v3.1.2 helper tests ----------
+
+def test_truncate_words_short_text_unchanged():
+    assert _truncate_words("hello", 100) == "hello"
+
+
+def test_truncate_words_cuts_at_word_boundary():
+    text = "O acórdão foi proferido por maioria, vencido o Des. Henrique Almeida Neto"
+    result = _truncate_words(text, 50)
+    assert len(result) <= 52  # +ellipsis
+    # MUST NOT end mid-word like "Almeida Ne"
+    assert result.endswith("…")
+    # Strip the ellipsis and check no half-word
+    stripped = result.rstrip("…").rstrip()
+    assert not stripped.endswith("Ne")
+    assert not stripped.endswith("Henr")
+
+
+def test_truncate_words_none_returns_empty():
+    assert _truncate_words(None, 100) == ""
+
+
+def test_truncate_words_preserves_sentence_end():
+    text = "Curto."
+    assert _truncate_words(text, 100) == "Curto."
+
+
+def test_truncate_words_strips_trailing_punctuation_before_ellipsis():
+    text = "Primeira cláusula, segunda cláusula, terceira cláusula continua aqui"
+    result = _truncate_words(text, 30)
+    assert result.endswith("…")
+    # No double punctuation
+    assert ",…" not in result
+    assert ".…" not in result
+
+
+def test_factor_to_text_string_passthrough():
+    assert _factor_to_text("ação direta") == "ação direta"
+
+
+def test_factor_to_text_dict_with_fator_key():
+    factor = {"fator": "Laudo pericial presente", "fundamentacao": "Prova técnica"}
+    assert _factor_to_text(factor) == "Laudo pericial presente"
+
+
+def test_factor_to_text_dict_with_descricao():
+    assert _factor_to_text({"descricao": "algo"}) == "algo"
+
+
+def test_factor_to_text_dict_fallback_keys():
+    assert _factor_to_text({"factor": "X"}) == "X"
+    assert _factor_to_text({"text": "Y"}) == "Y"
+    assert _factor_to_text({"label": "Z"}) == "Z"
+
+
+def test_factor_to_text_empty_dict():
+    assert _factor_to_text({}) == ""
+
+
+def test_factor_to_text_none():
+    assert _factor_to_text(None) == ""
+
+
+def test_find_valor_causa_direct():
+    chunks = [{"valores": {"causa": "R$ 100.000,00"}}]
+    assert _find_valor_causa(chunks) == "R$ 100.000,00"
+
+
+def test_find_valor_causa_from_outros():
+    chunks = [{
+        "valores": {
+            "outros": [
+                {"descricao": "Valor do contrato original", "valor": "R$ 485.000,00"},
+                {"descricao": "Lucros cessantes", "valor": "R$ 100.000,00"},
+            ]
+        }
+    }]
+    assert _find_valor_causa(chunks) == "R$ 485.000,00"
+
+
+def test_find_valor_causa_fallback_to_condenacao():
+    chunks = [{"valores": {"condenacao": "R$ 50.000,00"}}]
+    assert _find_valor_causa(chunks) == "R$ 50.000,00"
+
+
+def test_find_valor_causa_returns_none_when_nothing():
+    assert _find_valor_causa([{"tipo_peca": "DESPACHO"}]) is None
+    assert _find_valor_causa([]) is None
+
+
+def test_render_risk_factors_as_dict():
+    """v3.1.2 bug fix: factors emitted as dicts by risk_scorer should render
+    as clean text, not raw dict dump."""
+    risk = {
+        "risk_level": "BAIXO",
+        "overall_score": 2.0,
+        "procedural_risk": {
+            "score": 3,
+            "factors": [
+                {"fator": "Acórdão por maioria — art. 942 arguível", "fundamentacao": "Raciocínio"},
+            ],
+        },
+        "merit_indicators": {
+            "score": 2,
+            "favorable_factors": [
+                {"fator": "Laudo pericial presente", "fundamentacao": "Prova técnica"},
+            ],
+            "unfavorable_factors": [],
+        },
+        "monetary_exposure": {},
+    }
+    out = render_risk_assessment(risk)
+    # Clean text, no raw dict repr
+    assert "{'fator'" not in out
+    assert "Acórdão por maioria" in out
+    assert "Laudo pericial presente" in out
+
+
+def test_render_header_finds_valor_from_outros():
+    analyzed = {
+        "processo_number": "X",
+        "chunks": [
+            {
+                "tipo_peca": "LAUDO PERICIAL",
+                "valores": {
+                    "outros": [
+                        {"descricao": "Valor do contrato original (doc. 01)", "valor": "R$ 485.000,00"},
+                    ]
+                },
+            }
+        ],
+    }
+    header = render_header(analyzed, None)
+    assert "R$ 485.000,00" in header
+
+
+def test_render_executive_summary_truncates_at_word_boundary():
+    """Regression: the resumo executivo used to cut strings mid-word."""
+    long_decision = (
+        "JULGA PARCIALMENTE PROCEDENTE o pedido, condenando a Ré ao pagamento de: "
+        "(a) R$ 48.500,00 de multa contratual (cláusula 8.2, limitada a 10%); "
+        "(b) R$ 127.500,00 de danos materiais; (c) R$ 247.300,00 de lucros cessantes; "
+        "(d) R$ 50.000,00 de danos morais. Total: R$ 473.300,00."
+    )
+    analyzed = {
+        "chunks": [
+            {"tipo_peca": "SENTENÇA", "decisao": long_decision},
+        ]
+    }
+    summary = render_executive_summary(analyzed, None, None)
+    # Must not contain a broken word like "de. Em" or "R$ 247.300,00 de."
+    # Any truncation ends with ellipsis, not dangling word fragments
+    assert "de. Em" not in summary
+    assert "…" in summary or len(long_decision) < 220
 
 
 def test_blockquote_multiline():

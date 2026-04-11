@@ -97,6 +97,75 @@ def _pick_first(*values: Any) -> Any:
     return None
 
 
+def _truncate_words(text: Any, max_chars: int, ellipsis: str = "…") -> str:
+    """Truncate text at the last word boundary before max_chars.
+
+    Avoids the v3.1.1 bug where `text[:200]` cut words in half like
+    'Vencido o Des. Henrique Almeida Ne' (truncated 'Neto').
+    """
+    if text is None:
+        return ""
+    s = str(text).strip()
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    last_space = cut.rfind(" ")
+    if last_space > max_chars * 0.6:  # only use word boundary if reasonably close
+        cut = cut[:last_space]
+    return cut.rstrip(" ,.;:") + ellipsis
+
+
+def _factor_to_text(factor: Any) -> str:
+    """Render a risk factor, which may be a string or a dict, as plain text.
+
+    Handles the v3.1.2 bug where risk_scorer.py emits dicts like
+    {'fator': '...', 'fundamentacao': '...'} but the report generator
+    was rendering them as raw str(dict) output.
+    """
+    if factor is None:
+        return ""
+    if isinstance(factor, str):
+        return factor
+    if isinstance(factor, dict):
+        for key in ("fator", "descricao", "description", "factor", "text", "label"):
+            val = factor.get(key)
+            if val:
+                return str(val)
+        return ""
+    return str(factor)
+
+
+def _find_valor_causa(chunks: list) -> str | None:
+    """Look for the 'valor da causa' across chunks, with fallback chain:
+    1. valores.causa (direct)
+    2. valores.outros[] with descricao containing 'causa' or 'contrato'
+    3. valores.condenacao (last resort)
+    """
+    for ch in chunks:
+        valores = ch.get("valores") or {}
+        if valores.get("causa"):
+            return valores["causa"]
+
+    for ch in chunks:
+        valores = ch.get("valores") or {}
+        outros = valores.get("outros") or []
+        for entry in outros:
+            if not isinstance(entry, dict):
+                continue
+            desc = (entry.get("descricao") or "").lower()
+            if any(tok in desc for tok in ("causa", "contrato", "valor original", "original")):
+                valor = entry.get("valor")
+                if valor:
+                    return valor
+
+    for ch in chunks:
+        valores = ch.get("valores") or {}
+        if valores.get("condenacao"):
+            return valores["condenacao"]
+
+    return None
+
+
 def _date_sort_key(date_str: Any) -> str:
     """Parse DD/MM/YYYY and return an ISO-sortable string. Missing or
     unparseable dates sort last."""
@@ -140,15 +209,8 @@ def render_header(analyzed: dict, risk: dict | None) -> str:
     autor_str = ", ".join(autor_list) if autor_list else "(não identificado)"
     reu_str = ", ".join(reu_list) if reu_list else "(não identificado)"
 
-    # Valor da causa
-    valor_causa: str | None = None
-    for ch in chunks:
-        valores = ch.get("valores") or {}
-        if valores.get("causa"):
-            valor_causa = valores["causa"]
-            break
-    if not valor_causa:
-        valor_causa = "(não identificado)"
+    # Valor da causa — tries valores.causa, then valores.outros[], then condenacao
+    valor_causa = _find_valor_causa(chunks) or "(não identificado)"
 
     # Status
     status = _pick_first(
@@ -197,7 +259,7 @@ def render_executive_summary(
     if sentenca:
         dec = sentenca.get("decisao")
         if dec:
-            parts.append(f"A sentença de primeiro grau decidiu: *{_escape_md(dec)[:200]}*.")
+            parts.append(f"A sentença de primeiro grau decidiu: *{_truncate_words(_escape_md(dec), 220)}*.")
 
     if acordao:
         dec = acordao.get("decisao")
@@ -205,13 +267,13 @@ def render_executive_summary(
         votacao = ac_struct.get("votacao")
         resultado = ac_struct.get("resultado")
         if dec or resultado:
-            txt = f"Em segunda instância, o acórdão"
+            txt = "Em segunda instância, o acórdão"
             if resultado:
                 txt += f" resultou em **{resultado.replace('_', ' ').lower()}**"
             if votacao:
                 txt += f" por **{votacao.lower()}**"
             if dec:
-                txt += f": *{_escape_md(dec)[:200]}*"
+                txt += f": *{_truncate_words(_escape_md(dec), 220)}*."
             else:
                 txt += "."
             parts.append(txt)
@@ -432,16 +494,22 @@ def render_risk_assessment(risk: dict | None) -> str:
     out.append("|---|---|---|")
 
     p_score = procedural.get("score", "—")
-    p_factors = procedural.get("factors") or procedural.get("fatores") or []
+    p_factors_raw = procedural.get("factors") or procedural.get("fatores") or []
+    p_factors = [_factor_to_text(f) for f in p_factors_raw[:5]]
+    p_factors = [t for t in p_factors if t]
     out.append(
-        f"| Processual | {p_score}/10 | {_escape_table_cell(', '.join(str(f) for f in p_factors[:5]))} |"
+        f"| Processual | {p_score}/10 | {_escape_table_cell(', '.join(p_factors))} |"
     )
 
     m_score = merit.get("score", "—")
-    m_fav = merit.get("favorable_factors") or merit.get("fatores_favoraveis") or []
-    m_unf = merit.get("unfavorable_factors") or merit.get("fatores_desfavoraveis") or []
-    fav_str = "✅ " + ", ".join(str(f) for f in m_fav[:3]) if m_fav else ""
-    unf_str = "❌ " + ", ".join(str(f) for f in m_unf[:3]) if m_unf else ""
+    m_fav_raw = merit.get("favorable_factors") or merit.get("fatores_favoraveis") or []
+    m_unf_raw = merit.get("unfavorable_factors") or merit.get("fatores_desfavoraveis") or []
+    m_fav = [_factor_to_text(f) for f in m_fav_raw[:3]]
+    m_unf = [_factor_to_text(f) for f in m_unf_raw[:3]]
+    m_fav = [t for t in m_fav if t]
+    m_unf = [t for t in m_unf if t]
+    fav_str = "✅ " + ", ".join(m_fav) if m_fav else ""
+    unf_str = "❌ " + ", ".join(m_unf) if m_unf else ""
     factors = " / ".join(x for x in [fav_str, unf_str] if x)
     out.append(f"| Mérito | {m_score}/10 | {_escape_table_cell(factors)} |")
 

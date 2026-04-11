@@ -48,6 +48,15 @@
       "type": "string",
       "description": "Optional. When using split-semantic (multiple pieces in one physical chunk), set this to the original chunk_file path. The merge script will reuse the same physical file for all entries with the same chunk_file_override."
     },
+    "primary_date": {
+      "type": ["string", "null"],
+      "description": "Main date of this specific piece in DD/MM/YYYY format. Critical for split-semantic: each piece should declare its own date (sentença 12/12/2024, apelação 15/01/2025, etc.), otherwise the merge script will inherit the parent chunk's date which may be wrong. Used for chronological sorting in the final report."
+    },
+    "dates_found": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "All dates mentioned in this piece (optional). Parallel to primary_date but lists every date for completeness."
+    },
     "partes": {
       "type": "object",
       "additionalProperties": false,

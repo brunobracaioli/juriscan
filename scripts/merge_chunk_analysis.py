@@ -52,6 +52,10 @@ SEMANTIC_FIELDS = [
     "prazos",
     "citation_spans",
     "instancia",
+    # v3.1.2: primary_date and dates_found can be overridden per-piece
+    # (critical for split-semantic where each piece has its own date)
+    "primary_date",
+    "dates_found",
 ]
 
 # Filename pattern: 00.analysis.json, 02a.analysis.json, etc.
@@ -170,10 +174,25 @@ def merge(
         return analysis
 
     def _build_suffixed_entry(key: str, analysis: dict, parent: dict) -> dict:
-        """Build a new chunk entry for a suffixed (split-semantic) analysis."""
+        """Build a new chunk entry for a suffixed (split-semantic) analysis.
+
+        Technical fields (char_count, chunk_file, page_range, ocr_confidence,
+        primary_date, dates_found) are inherited from the parent chunk by
+        default. The per-chunk file can override any of them by including
+        the field explicitly — most important is primary_date, since each
+        split-semantic piece typically has its own date that differs from
+        the parent's.
+        """
         new_entry = {
             k: parent.get(k)
-            for k in ["char_count", "chunk_file", "page_range", "ocr_confidence"]
+            for k in [
+                "char_count",
+                "chunk_file",
+                "page_range",
+                "ocr_confidence",
+                "primary_date",
+                "dates_found",
+            ]
             if k in parent
         }
         # Preserve the user-facing string index for debugging
@@ -182,6 +201,8 @@ def merge(
         # Allow override of chunk_file (split-semantic typically reuses parent's file)
         if "chunk_file_override" in analysis:
             new_entry["chunk_file"] = analysis["chunk_file_override"]
+        # Semantic fields override the inherited technical fields
+        # (primary_date and dates_found are in SEMANTIC_FIELDS since v3.1.2)
         for field in SEMANTIC_FIELDS:
             if field in analysis and field != "chunk_file_override":
                 new_entry[field] = analysis[field]

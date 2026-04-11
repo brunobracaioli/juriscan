@@ -259,10 +259,12 @@ Campos adicionais recomendados: `artigos_lei[]`, `jurisprudencia[]`, `binding_pr
 **Quando o chunker agrupa peças num único arquivo físico:** se o arquivo `chunks/02-laudo-pericial.txt` contém na verdade *laudo + sentença + apelação*, você tem duas opções:
 
 - **Split semântico (preferido):** escreva múltiplos arquivos de análise para o mesmo chunk físico:
-  - `chunks/02.analysis.json` — `{"index": 2, "tipo_peca": "LAUDO PERICIAL", ...}`
-  - `chunks/02a.analysis.json` — `{"index": "2a", "tipo_peca": "SENTENÇA", "chunk_file_override": "chunks/02-laudo-pericial.txt", ...}`
-  - `chunks/02b.analysis.json` — `{"index": "2b", "tipo_peca": "APELAÇÃO", "chunk_file_override": "chunks/02-laudo-pericial.txt", ...}`
+  - `chunks/02.analysis.json` — `{"index": 2, "tipo_peca": "LAUDO PERICIAL", "primary_date": "30/09/2024", ...}`
+  - `chunks/02a.analysis.json` — `{"index": "2a", "tipo_peca": "SENTENÇA", "chunk_file_override": "chunks/02-laudo-pericial.txt", "primary_date": "12/12/2024", ...}`
+  - `chunks/02b.analysis.json` — `{"index": "2b", "tipo_peca": "APELAÇÃO", "chunk_file_override": "chunks/02-laudo-pericial.txt", "primary_date": "15/01/2025", ...}`
   O `merge_chunk_analysis.py` valida e cria N entradas em `analyzed.chunks[]` todas apontando para o mesmo arquivo físico.
+
+  **IMPORTANTE — `primary_date` por peça:** cada entrada split-semantic **deve** incluir seu próprio `primary_date` no formato DD/MM/YYYY extraído do texto da peça específica (não a data do chunk físico). Sem isso, o merge herda a data do parent por default, mas as peças filhas ficam com a data errada e a ordenação cronológica do relatório fica quebrada. Exemplo: se a sentença é de 12/12/2024 e está dentro do chunk físico do laudo contábil de 30/09/2024, o `02a.analysis.json` (sentença) precisa declarar `"primary_date": "12/12/2024"`.
 - **Peça dominante:** use apenas `02.analysis.json` com o `tipo_peca` mais importante do agrupamento (geralmente a decisória — sentença, acórdão) e documente as outras em `fatos_relevantes`.
 
 #### Step 3c — Consolide os arquivos de análise

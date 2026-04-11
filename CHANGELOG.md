@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-04-11
+
+Second patch after the real-user smoke test of v3.1.1. Four concrete bugs
+fixed — one critical (split-semantic children without dates broke the
+chronological table), three cosmetic but visible.
+
+### Fixed
+
+- **merge_chunk_analysis.py inherits primary_date/dates_found for
+  split-semantic children (CRITICAL)** — v3.1.1 stripped `primary_date`
+  from inherited technical fields when building split-semantic entries,
+  so pieces like SENTENÇA split from a LAUDO chunk ended up with null
+  date and fell to the end of the chronological table. Result: table
+  order was nonsense (CONTRARRAZÕES appeared before SENTENÇA/APELAÇÃO).
+  Now `primary_date` and `dates_found` are inherited from the parent by
+  default, and the per-chunk file can override them when the piece has
+  its own date (which is the CORRECT usage — a sentença inside a laudo
+  chunk has a different date than the laudo).
+- **chunk_analysis_schema.json adds primary_date and dates_found** as
+  optional string/array fields, enabling per-piece date override.
+- **SKILL.md Step 3 documents split-semantic date requirement** — each
+  split entry should declare its own `primary_date` for correct
+  chronological ordering.
+- **generate_report.py word-safe truncation** — the executive summary
+  used `_escape_md(dec)[:200]` which cut words in half like
+  `"Vencido o Des. Henrique Almeida Ne"` (should be "Neto") or
+  `"R$ 247.300,00 de. Em segunda..."` (should be "de lucros cessantes").
+  New helper `_truncate_words()` respects word boundaries and appends a
+  clean ellipsis.
+- **generate_report.py handles risk factors as dicts** — risk_scorer.py
+  emits factors as `{"fator": "X", "fundamentacao": "Y"}` dicts, but
+  `render_risk_assessment()` was calling `str(f)` on them, dumping raw
+  Python repr into the table. New helper `_factor_to_text()` extracts
+  `fator` / `descricao` / `factor` / `text` / `label` keys.
+- **generate_report.py valor da causa fallback chain** — when
+  `valores.causa` is empty, now searches `valores.outros[]` for entries
+  with `descricao` containing `causa`/`contrato`/`valor original`, then
+  falls back to `valores.condenacao`. Handles analyses that start after
+  the petição inicial where valor da causa must be inferred from laudos.
+
+### Tests
+
+- 414 → 435 passed (+21 new):
+  - `test_merge_split_semantic_inherits_primary_date_from_parent`
+  - `test_merge_split_semantic_override_primary_date`
+  - `test_merge_numeric_chunk_can_override_primary_date`
+  - `test_truncate_words_*` (5 tests)
+  - `test_factor_to_text_*` (6 tests)
+  - `test_find_valor_causa_*` (4 tests)
+  - `test_render_risk_factors_as_dict`
+  - `test_render_header_finds_valor_from_outros`
+  - `test_render_executive_summary_truncates_at_word_boundary`
+
 ## [3.1.1] - 2026-04-11
 
 Patch fix release after the v3.1.0-legacy smoke test exposed 3 concrete
