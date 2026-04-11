@@ -614,15 +614,174 @@ def generate_prazo_view(analysis: dict, processo_number: str) -> str:
     return md
 
 
+def generate_auditoria_view(analysis: dict, processo_number: str) -> str:
+    """v3 — Render auditor_findings grouped by impact. Phase 6 Step 6.3."""
+    findings = analysis.get('auditor_findings') or []
+    if not findings:
+        return ""
+    impact_order = {'ALTO': 0, 'MÉDIO': 1, 'BAIXO': 2}
+    findings_sorted = sorted(findings, key=lambda f: impact_order.get(f.get('impacto', 'BAIXO'), 3))
+
+    lines = [
+        "---",
+        f"processo: \"{processo_number}\"",
+        "tipo: auditoria",
+        "---",
+        "",
+        "# Auditoria Processual",
+        "",
+        "Findings do `juriscan-auditor-processual` — análise imparcial de vícios,",
+        "nulidades, omissões e gatilhos processuais que nenhum dos advogados",
+        "tem incentivo de apontar.",
+        "",
+        f"**Total de findings:** {len(findings_sorted)}",
+        "",
+    ]
+    for i, f in enumerate(findings_sorted, 1):
+        tipo = f.get('tipo', 'OUTRO')
+        impacto = f.get('impacto', '?')
+        fundamento = f.get('fundamento', '')
+        peca_ref = f.get('peca_ref', '')
+        lines += [
+            f"## {i}. {tipo} — impacto {impacto}",
+            "",
+            f"**Fundamento:** {fundamento}",
+        ]
+        if peca_ref:
+            lines.append(f"**Peça:** {peca_ref}")
+        lines += [
+            "",
+            f"**Descrição:** {f.get('descricao', '')}",
+            "",
+            f"**Ação sugerida:** {f.get('acao_sugerida', '')}",
+            "",
+            "---",
+            "",
+        ]
+    lines += ["", "⬅️ [[_INDEX|Voltar ao Índice]]", ""]
+    return "\n".join(lines)
+
+
+def generate_verificacoes_view(analysis: dict, processo_number: str) -> str:
+    """v3 — Render verifications as a status table. Phase 6 Step 6.3."""
+    verifications = analysis.get('verifications') or []
+    if not verifications:
+        return ""
+    summary = analysis.get('verification_summary') or {}
+    status_emoji = {
+        'CONFIRMADO': '✅',
+        'DIVERGENTE': '⚠️',
+        'NAO_ENCONTRADO': '❌',
+    }
+    lines = [
+        "---",
+        f"processo: \"{processo_number}\"",
+        "tipo: verificações",
+        "---",
+        "",
+        "# Verificações de Jurisprudência",
+        "",
+        "Citações verificadas pelo `juriscan-verificador` contra fontes oficiais",
+        "(whitelist em `references/whitelist_fontes.json`).",
+        "",
+    ]
+    if summary:
+        lines += [
+            f"**Total:** {summary.get('total_verifications', len(verifications))} | "
+            f"✅ {summary.get('confirmed', 0)} | "
+            f"⚠️ {summary.get('divergent', 0)} | "
+            f"❌ {summary.get('unverified', 0)}",
+            "",
+        ]
+    lines += [
+        "| Status | Tipo | Citação | Fonte | Data de acesso |",
+        "|---|---|---|---|---|",
+    ]
+    for v in verifications:
+        status = v.get('status', '?')
+        emoji = status_emoji.get(status, '?')
+        tipo = v.get('tipo', '')
+        citacao = (v.get('citacao_original') or '').replace('|', '\\|')
+        url = v.get('source_url') or ''
+        fonte_link = f"[link]({url})" if url else '—'
+        data = v.get('access_date') or ''
+        lines.append(f"| {emoji} {status} | {tipo} | {citacao} | {fonte_link} | {data} |")
+    # Detailed divergences
+    divergents = [v for v in verifications if v.get('status') == 'DIVERGENTE']
+    if divergents:
+        lines += ["", "## Divergências", ""]
+        for v in divergents:
+            lines += [
+                f"### {v.get('citacao_original', '')}",
+                "",
+                f"**Divergência:** {v.get('divergencia') or '(não explicitada)'}",
+                "",
+                f"**Trecho oficial:** > {v.get('trecho_oficial') or '—'}",
+                "",
+            ]
+    lines += ["", "⬅️ [[_INDEX|Voltar ao Índice]]", ""]
+    return "\n".join(lines)
+
+
+def generate_perspectives_view(analysis: dict, processo_number: str) -> str:
+    """v3 — Two-column perspectives (autor vs. réu). Phase 6 Step 6.3."""
+    perspectives = analysis.get('perspectives') or {}
+    autor = perspectives.get('autor')
+    reu = perspectives.get('reu')
+    if not (autor or reu):
+        return ""
+
+    def _section(label: str, persp: dict | None) -> list[str]:
+        if not persp:
+            return [f"## {label}", "", "_sem dados_", ""]
+        out = [
+            f"## {label}",
+            "",
+            f"**Risco:** {persp.get('risk_level', '?')} (score {persp.get('risk_score', '?')}/10)",
+            "",
+            "### Forças",
+        ]
+        for f in (persp.get('forcas') or []):
+            out.append(f"- **{f.get('titulo', '')}** — {f.get('descricao', '')}")
+        out += ["", "### Fraquezas"]
+        for f in (persp.get('fraquezas') or []):
+            out.append(f"- **{f.get('titulo', '')}** — {f.get('descricao', '')}")
+        out += ["", "### Recursos cabíveis"]
+        for r in (persp.get('recursos_cabiveis') or []):
+            out.append(
+                f"- **{r.get('recurso', '')}** — {r.get('cabimento', '')} "
+                f"(prazo {r.get('prazo_dias', '?')}d)"
+            )
+        out.append("")
+        return out
+
+    lines = [
+        "---",
+        f"processo: \"{processo_number}\"",
+        "tipo: perspectivas",
+        "---",
+        "",
+        "# Perspectivas (Polos Ativo × Passivo)",
+        "",
+        "Análise dialética do `juriscan-advogado-autor` e `juriscan-advogado-reu`.",
+        "Os dois scores medem coisas diferentes — risco é sempre relativo ao polo.",
+        "",
+    ]
+    lines += _section("⚖️ Autor (polo ativo)", autor)
+    lines += _section("🛡️ Réu (polo passivo)", reu)
+    lines += ["", "⬅️ [[_INDEX|Voltar ao Índice]]", ""]
+    return "\n".join(lines)
+
+
 def export_vault(analysis: dict, output_dir: str):
     """Export full Obsidian vault structure."""
     processo_number = analysis.get('processo_number', 'N/A')
-    
+
     # Create directories
     dirs = ['peças', 'legislação', 'jurisprudência', 'diagramas']
     for d in dirs:
         os.makedirs(os.path.join(output_dir, d), exist_ok=True)
-    
+
     # Generate main files
     files = {
         '_INDEX.md': generate_index(analysis, processo_number),
@@ -633,6 +792,19 @@ def export_vault(analysis: dict, output_dir: str):
         '_INSTÂNCIAS.md': generate_instance_view(analysis, processo_number),
         '_PRAZOS.md': generate_prazo_view(analysis, processo_number),
     }
+
+    # Phase 6 Step 6.3 — v3 views, only generated when the corresponding fields
+    # are present. Backwards compat: legacy v2 outputs produce the same file set
+    # as before.
+    auditoria = generate_auditoria_view(analysis, processo_number)
+    if auditoria:
+        files['_AUDITORIA.md'] = auditoria
+    verificacoes = generate_verificacoes_view(analysis, processo_number)
+    if verificacoes:
+        files['_VERIFICAÇÕES.md'] = verificacoes
+    perspectivas = generate_perspectives_view(analysis, processo_number)
+    if perspectivas:
+        files['_PERSPECTIVAS.md'] = perspectivas
     
     for filename, content in files.items():
         with open(os.path.join(output_dir, filename), 'w', encoding='utf-8') as f:
