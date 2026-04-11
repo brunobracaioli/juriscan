@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-04-11
+
+Cosmetic polish on the executive report. Closes the two known issues left
+as backlog after v3.1.2 so the release ships with zero known issues.
+
+### Fixed
+
+- **Double period in executive summary** — `_truncate_words()` now strips
+  trailing `.,;:` even when the text is short enough to skip truncation, so
+  callers that append `.` no longer produce `integral..`.
+- **Empty "Processual" factors cell in risk table** — when the risk scorer
+  emits no `factors[]`, `render_risk_assessment()` renders `—` instead of
+  a blank cell. Same for Mérito when both favorable and unfavorable lists
+  are empty.
+
+### Tests
+
+- 438 passed, 1 skipped (was 435).
+- New regressions: `test_truncate_words_strips_trailing_period_always`,
+  `test_render_risk_assessment_empty_factors_shows_dash`,
+  `test_truncate_words_strips_trailing_period_short_text`,
+  `test_render_executive_summary_no_double_period`.
+
 ## [3.1.2] - 2026-04-11
 
 Second patch after the real-user smoke test of v3.1.1. Four concrete bugs

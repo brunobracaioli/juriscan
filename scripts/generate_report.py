@@ -107,7 +107,7 @@ def _truncate_words(text: Any, max_chars: int, ellipsis: str = "…") -> str:
         return ""
     s = str(text).strip()
     if len(s) <= max_chars:
-        return s
+        return s.rstrip(" ,.;:")
     cut = s[:max_chars]
     last_space = cut.rfind(" ")
     if last_space > max_chars * 0.6:  # only use word boundary if reasonably close
@@ -497,8 +497,9 @@ def render_risk_assessment(risk: dict | None) -> str:
     p_factors_raw = procedural.get("factors") or procedural.get("fatores") or []
     p_factors = [_factor_to_text(f) for f in p_factors_raw[:5]]
     p_factors = [t for t in p_factors if t]
+    p_factors_str = ", ".join(p_factors) if p_factors else "—"
     out.append(
-        f"| Processual | {p_score}/10 | {_escape_table_cell(', '.join(p_factors))} |"
+        f"| Processual | {p_score}/10 | {_escape_table_cell(p_factors_str)} |"
     )
 
     m_score = merit.get("score", "—")
@@ -510,7 +511,7 @@ def render_risk_assessment(risk: dict | None) -> str:
     m_unf = [t for t in m_unf if t]
     fav_str = "✅ " + ", ".join(m_fav) if m_fav else ""
     unf_str = "❌ " + ", ".join(m_unf) if m_unf else ""
-    factors = " / ".join(x for x in [fav_str, unf_str] if x)
+    factors = " / ".join(x for x in [fav_str, unf_str] if x) or "—"
     out.append(f"| Mérito | {m_score}/10 | {_escape_table_cell(factors)} |")
 
     max_v = monetary.get("max_exposure") or monetary.get("max")

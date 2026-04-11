@@ -230,9 +230,9 @@ def test_truncate_words_none_returns_empty():
     assert _truncate_words(None, 100) == ""
 
 
-def test_truncate_words_preserves_sentence_end():
-    text = "Curto."
-    assert _truncate_words(text, 100) == "Curto."
+def test_truncate_words_strips_trailing_period_always():
+    """v3.1.3: trailing punctuation is always stripped so callers can append '.'."""
+    assert _truncate_words("Curto.", 100) == "Curto"
 
 
 def test_truncate_words_strips_trailing_punctuation_before_ellipsis():
@@ -515,6 +515,40 @@ def test_render_risk_assessment():
 
 def test_render_risk_assessment_none():
     assert render_risk_assessment(None) == ""
+
+
+def test_render_risk_assessment_empty_factors_shows_dash():
+    """v3.1.3: empty factor lists render as '—' instead of blank cell."""
+    risk = {
+        "risk_level": "MÉDIO",
+        "overall_score": 5.0,
+        "procedural_risk": {"score": 5, "factors": []},
+        "merit_indicators": {"score": 5, "favorable_factors": [], "unfavorable_factors": []},
+        "monetary_exposure": {},
+    }
+    out = render_risk_assessment(risk)
+    assert "| Processual | 5/10 | — |" in out
+    assert "| Mérito | 5/10 | — |" in out
+
+
+def test_truncate_words_strips_trailing_period_short_text():
+    """v3.1.3: short text ending in '.' no longer produces double period."""
+    from scripts.generate_report import _truncate_words
+    assert _truncate_words("integral.", 220) == "integral"
+    assert _truncate_words("short text.", 220) == "short text"
+    assert _truncate_words("with comma,", 220) == "with comma"
+
+
+def test_render_executive_summary_no_double_period():
+    """v3.1.3: regression for 'integral..' double-period bug."""
+    analyzed = {
+        "chunks": [
+            {"tipo_peca": "SENTENÇA", "decisao": "Procedente integral."},
+        ]
+    }
+    summary = render_executive_summary(analyzed, None, None)
+    assert ".." not in summary
+    assert "integral*." in summary
 
 
 def test_render_recommendations_both_polos():
