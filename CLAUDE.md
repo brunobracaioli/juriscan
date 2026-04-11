@@ -23,23 +23,59 @@ python3 scripts/extract_and_chunk.py --input <pdf> --output <dir>
 python3 scripts/integrity_check.py --input <dir>
 python3 scripts/prazo_calculator.py --date 2025-03-15 --tipo contestação --state SP
 python3 scripts/instance_tracker.py --analysis <analyzed.json> --output <instances.json>
-python3 scripts/contradiction_report.py --analysis <analyzed.json> --output <contradictions.json>
-python3 scripts/risk_scorer.py --analysis <analyzed.json> --output <risk.json>
+python3 scripts/legacy/contradiction_report.py --analysis <analyzed.json> --output <contradictions.json>
+python3 scripts/legacy/risk_scorer.py --analysis <analyzed.json> --output <risk.json>
 python3 scripts/schema_validator.py --input <analyzed.json>
 python3 scripts/obsidian_export.py --analysis <analyzed.json> --output <vault_dir>
+
+# Agents pipeline (opt-in during transition; see docs/architecture.md)
+python3 scripts/agent_io.py new-run
+python3 scripts/agent_io.py validate --agent <role> --input <output.json>
+python3 scripts/persist_chunks.py --segmenter-output <seg.json> --raw-text <raw.txt> --output-dir <out>
+python3 scripts/enrich_deterministic.py --input <pieces.json> --output <enriched.json>
+python3 scripts/confidence_rules.py --synthesis <s.json> --auditor <a.json> --output <final.json>
+python3 scripts/finalize.py --input <analyzed.json> --output <final.json>
+python3 scripts/report_metrics.py --all-runs --enforce
+python3 scripts/migrate_v2_to_v3.py --input <v2.json> --output <v3.json>
 ```
 
 ## Architecture
 
 **Principle: Claude = semantic analysis engine. Python = deterministic data wrangling.**
 
-### 10-Stage Pipeline
+### Two pipelines (during transition)
+
+1. **Legacy** (`--pipeline=legacy`, current default) — 10-stage deterministic
+   pipeline from `extract_and_chunk.py` through regex chunking, per-chunk analysis
+   by Claude via prompt templates, and scripts/legacy for contradiction_report
+   and risk_scorer.
+2. **Agents** (`--pipeline=agents`, opt-in) — hybrid pipeline where semantic
+   reasoning is delegated to native Claude Code subagents in `.claude/agents/`
+   orchestrated by SKILL.md via the Task tool. Python still owns every
+   deterministic computation (dates, BRL, CNJ, prazos CPC, schema, export).
+   See `docs/architecture.md` for the full flow and `docs/subagents.md` for
+   per-subagent contracts.
+
+### Legacy 10-Stage Pipeline
 
 ```
 PDF → [1] Extraction → [2] Integrity Check → [3] Chunking → [4] Per-Chunk Analysis (Claude)
 → [5] Schema Validation → [6] Cross-Synthesis (Claude) → [7] Prazo Calculation
 → [8] Risk Scoring → [9] Output → [10] Obsidian Export
 ```
+
+### Agents Pipeline (see SKILL.md § Agents Pipeline)
+
+```
+PDF → extract_pdf → juriscan-segmenter → persist_chunks → juriscan-parser (parallel)
+    → enrich_deterministic → [juriscan-advogado-autor × juriscan-advogado-reu × juriscan-auditor-processual] (parallel)
+    → juriscan-verificador → juriscan-sintetizador → confidence_rules → finalize → obsidian_export
+```
+
+The agents pipeline uses **zero** `ANTHROPIC_API_KEY` — it runs on the user's
+Claude Code subscription. Every subagent output is JSON-schema-validated by
+`scripts/agent_io.py validate` and logged to an append-only audit trail at
+`.juriscan/audit/<run_id>.jsonl`. See `docs/operations.md` for troubleshooting.
 
 ### Script Responsibilities
 
