@@ -45,7 +45,7 @@ EXPECTED_FIELDS_BY_TYPE: dict[str, list[str]] = {
     "CONTESTAÇÃO": ["fatos_relevantes"],
     "RÉPLICA": ["fatos_relevantes"],
     "SENTENÇA": ["decisao", "valores"],
-    "ACÓRDÃO": ["decisao", "acordao_detail"],
+    "ACÓRDÃO": ["decisao", "acordao_structure"],
     "DESPACHO": ["decisao"],
     "APELAÇÃO": ["pedidos"],
     "AGRAVO": ["pedidos"],
@@ -76,20 +76,73 @@ def _is_populated(value) -> bool:
     return True
 
 
+# Tokens that must appear verbatim in citation_spans when an ACÓRDÃO has
+# votacao=MAIORIA AND resultado is a reform — this is the art. 942 CPC
+# grounding requirement (Phase A.4.7).
+ART_942_TOKENS = ("ampliação", "colegiado", "maioria", "vencido")
+REFORM_RESULTS = {"PROVIDO", "PARCIALMENTE_PROVIDO"}
+
+
+def _check_art_942_grounding(chunks: list) -> list[str]:
+    """For every ACÓRDÃO chunk proferido por MAIORIA reformando mérito,
+    require at least one citation_spans entry containing the verbatim tokens
+    that ground the art. 942 CPC detection.
+
+    Returns a list of warnings (one per offending chunk).
+    """
+    warnings: list[str] = []
+    for ch in chunks:
+        if (ch.get("tipo_peca") or "").upper() != "ACÓRDÃO":
+            continue
+        ac = ch.get("acordao_structure") or {}
+        if ac.get("votacao") != "MAIORIA":
+            continue
+        resultado = ac.get("resultado")
+        if resultado not in REFORM_RESULTS:
+            continue
+
+        spans = ch.get("citation_spans") or []
+        grounded = False
+        for s in spans:
+            src = (s.get("source_text") or "").lower()
+            if any(tok in src for tok in ART_942_TOKENS):
+                grounded = True
+                break
+        if not grounded:
+            idx = ch.get("index", "?")
+            warnings.append(
+                f"WARN: chunk[{idx}] ACÓRDÃO por maioria reformando mérito "
+                f"(resultado={resultado}) sem citation_spans grounding o art. 942. "
+                f"Adicione um trecho verbatim contendo algum de: {ART_942_TOKENS}"
+            )
+    return warnings
+
+
 def evaluate(analyzed: dict) -> dict:
     """Evaluate the content quality of an analyzed.json document.
 
-    Returns a dict with `warnings` (list of human-readable strings),
-    `stats` (per-field populated counts), and `total_chunks`.
+    Returns a dict with:
+    - `warnings` — human-readable strings (summary level)
+    - `stats` — per-field populated counts
+    - `total_chunks` — chunk count
+    - `chunks_needing_retry` — list of {index, tipo_peca, chunk_file, missing_fields[]}
+      identifying WHICH chunks should be re-analyzed during SKILL.md Step 3b
+      retry loop
     """
     chunks = analyzed.get("chunks", []) or []
     total = len(chunks)
     warnings: list[str] = []
     stats: dict[str, dict] = {}
+    chunks_needing_retry: list[dict] = []
 
     if total == 0:
         warnings.append("WARN: analyzed.json has zero chunks — extraction or chunking failed")
-        return {"warnings": warnings, "stats": stats, "total_chunks": 0}
+        return {
+            "warnings": warnings,
+            "stats": stats,
+            "total_chunks": 0,
+            "chunks_needing_retry": [],
+        }
 
     # Count populated rate for each global canonical field across chunks
     for field in GLOBAL_CANONICAL_FIELDS:
@@ -105,17 +158,61 @@ def evaluate(analyzed: dict) -> dict:
                 f"WARN: apenas {populated}/{total} chunks têm campo {field!r} populado"
             )
 
-    # Per-piece-type expected-field check
+    # Per-piece-type expected-field check (chunk-level retry plan)
+    retry_map: dict[str, dict] = {}
     for i, chunk in enumerate(chunks):
         tipo = chunk.get("tipo_peca")
         if not tipo:
+            # Chunk sem tipo_peca é sempre retry
+            key = str(chunk.get("index", i))
+            retry_map[key] = {
+                "index": chunk.get("index", i),
+                "tipo_peca": None,
+                "chunk_file": chunk.get("chunk_file"),
+                "missing_fields": ["tipo_peca"],
+            }
             continue
         expected = EXPECTED_FIELDS_BY_TYPE.get(tipo.upper(), [])
+        missing: list[str] = []
         for field in expected:
             if not _is_populated(chunk.get(field)):
+                missing.append(field)
                 warnings.append(
                     f"WARN: chunk[{i}] tipo_peca={tipo!r} sem campo esperado {field!r}"
                 )
+        if missing:
+            key = str(chunk.get("index", i))
+            retry_map[key] = {
+                "index": chunk.get("index", i),
+                "tipo_peca": tipo,
+                "chunk_file": chunk.get("chunk_file"),
+                "missing_fields": missing,
+            }
+
+    chunks_needing_retry = list(retry_map.values())
+
+    # Phase A.4.7 — art. 942 grounding enforcement
+    for warning in _check_art_942_grounding(chunks):
+        warnings.append(warning)
+        # Also add to retry plan so Claude knows which chunk to fix
+        import re
+        m = re.search(r"chunk\[(\d+)\]", warning)
+        if m:
+            idx = int(m.group(1))
+            key = str(idx)
+            if key not in retry_map:
+                retry_map[key] = {
+                    "index": idx,
+                    "tipo_peca": "ACÓRDÃO",
+                    "chunk_file": next(
+                        (c.get("chunk_file") for c in chunks if c.get("index") == idx),
+                        None,
+                    ),
+                    "missing_fields": ["citation_spans (art. 942 grounding)"],
+                }
+            else:
+                retry_map[key]["missing_fields"].append("citation_spans (art. 942 grounding)")
+    chunks_needing_retry = list(retry_map.values())
 
     # Schema version sanity
     if not analyzed.get("schema_version") and not analyzed.get("analysis_version"):
@@ -124,7 +221,12 @@ def evaluate(analyzed: dict) -> dict:
             "marcação de versão recomendada"
         )
 
-    return {"warnings": warnings, "stats": stats, "total_chunks": total}
+    return {
+        "warnings": warnings,
+        "stats": stats,
+        "total_chunks": total,
+        "chunks_needing_retry": chunks_needing_retry,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,6 +239,12 @@ def main(argv: list[str] | None = None) -> int:
         "--strict",
         action="store_true",
         help="Exit 1 if any warning is emitted (default: always exit 0)",
+    )
+    parser.add_argument(
+        "--per-chunk-retry-plan",
+        action="store_true",
+        help="Print a human-readable retry plan identifying which chunks need "
+             "re-analysis and what fields are missing",
     )
     args = parser.parse_args(argv)
 
@@ -168,7 +276,24 @@ def main(argv: list[str] | None = None) -> int:
             for w in result["warnings"]:
                 print(f"  - {w}", file=sys.stderr)
 
-    if args.strict and result["warnings"]:
+    if args.per_chunk_retry_plan and result.get("chunks_needing_retry"):
+        print("\nChunks precisando re-análise:")
+        for entry in result["chunks_needing_retry"]:
+            idx = entry.get("index")
+            tipo = entry.get("tipo_peca") or "(tipo_peca ausente)"
+            chunk_file = entry.get("chunk_file") or "(sem chunk_file)"
+            missing = ", ".join(entry.get("missing_fields", []))
+            print(f"  [{idx}] {tipo} ({chunk_file}) → faltam: {missing}")
+        print(
+            "\nPara cada entrada acima:\n"
+            "  1. Read o chunk_file\n"
+            "  2. Re-analise preenchendo os missing_fields\n"
+            "  3. Write chunks/<index>.analysis.json atualizado\n"
+            "  4. Re-rode merge_chunk_analysis.py + content_quality_check.py"
+        )
+
+    # --strict: block on warnings OR on any chunk needing retry
+    if args.strict and (result["warnings"] or result.get("chunks_needing_retry")):
         return 1
     return 0
 

@@ -216,62 +216,72 @@ Verifica OCR quality, anomalias de metadata, lacunas de páginas. Flag chunks co
 
 ### Step 3: Per-Chunk Analysis
 
-Esta é a etapa mais importante do pipeline. Toda a qualidade dos arquivos persistidos (`analyzed.json`, `risk.json`, `instances.json`, vault Obsidian) depende dela. **Não tome atalhos.**
+Esta é a etapa mais importante do pipeline. Toda a qualidade dos arquivos persistidos (`analyzed.json`, `risk.json`, `instances.json`, vault Obsidian) e do relatório final depende dela.
 
-Para **cada chunk** em `chunks/`:
+O Step 3 tem três sub-steps:
 
-1. **Leia o arquivo do chunk** usando o tool Read (não invente conteúdo, não escreva script Python que hardcoda enrichments — leia o arquivo real).
-2. **Identifique o `tipo_peca`** consultando [piece_type_taxonomy.json](references/piece_type_taxonomy.json). Use o nome canônico exato (ex.: `"PETIÇÃO INICIAL"`, `"SENTENÇA"`, `"ACÓRDÃO"`) — não inventar variantes.
-3. **Aplique o prompt Análise Per-Chunk** de [prompt_templates.md](references/prompt_templates.md#1-análise-per-chunk-extração-estruturada) ao conteúdo do chunk e gere o objeto JSON populado **em sessão** (não em script Python externo).
-4. Para chunks `ACÓRDÃO`, também aplicar **Parsing Tripartite** de [prompt_templates.md](references/prompt_templates.md#3-parsing-tripartite-de-acórdão) e popular `acordao_detail`.
+#### Step 3a — Inicialize o skeleton
 
-Referência de entidades: [brazilian_legal_entities.md](references/brazilian_legal_entities.md).
-
-**REGRA CRÍTICA — proibido improvisar script Python que hardcoda enrichments.** Se você se pegar escrevendo um arquivo `build_analyzed.py` (ou similar) com dicionários `enrichments = {0: {...}, 1: {...}}`, **pare**. Isso é o sintoma do atalho que produz `analyzed.json` esqueleto. Em vez disso, leia cada chunk via Read tool, faça a análise no seu próprio raciocínio, e construa o dict diretamente em código curto que apenas mescla com `index.json`.
-
-**Campos mínimos obrigatórios** (toda execução real deve populá-los conforme o `tipo_peca`):
-
-| Campo | Quando popular | Comentário |
-|---|---|---|
-| `tipo_peca` | **Sempre** | Nome canônico da `piece_type_taxonomy.json` |
-| `partes` | Sempre que aparecerem nomes de partes | Object `{autor, reu, advogados[]}` |
-| `pedidos[]` | `PETIÇÃO INICIAL`, `RECONVENÇÃO`, recursos | Lista de strings |
-| `valores` | Quando houver R$ no texto | Object `{causa, condenacao, ...}` |
-| `fatos_relevantes[]` | Sempre que houver narrativa fática | Lista de strings |
-| `decisao` | `SENTENÇA`, `ACÓRDÃO`, `DESPACHO` | String com o dispositivo |
-| `acordao_detail` | `ACÓRDÃO` | Object tripartite (ementa, relatório, voto) + `votos_divergentes[]` |
-| `artigos_lei[]` | Sempre que citar artigos | Lista de strings (ex.: `"CPC art. 942"`) |
-| `jurisprudencia[]` | Sempre que citar precedente | Lista de objetos |
-| `prazos[]` | Quando houver intimação/publicação com data | Lista de objetos `{tipo, data_inicio, ...}` |
-
-**IMPORTANTE — como montar o `analyzed.json` final:** não reconstrua `chunks[]` do zero. Carregue o `index.json` existente (produzido pelo `extract_and_chunk.py`) e **ADICIONE** os campos semânticos a cada chunk. Os campos técnicos já existentes — especialmente `index`, `label`, `char_count`, `chunk_file`, `primary_date`, `dates_found`, `page_range`, `ocr_confidence` — **devem** ser preservados, pois o `schema_validator.py` roda um integrity gate que exige correspondência 1:1 entre chunks do JSON e arquivos físicos em `chunks/`. Omitir `chunk_file` aborta a validação.
-
-Receita correta:
-```python
-import json
-idx = json.load(open('<output_dir>/index.json'))
-for chunk in idx['chunks']:
-    # 1. Leia o conteúdo via Read tool ANTES desta linha — não dentro do loop
-    # 2. Analise mentalmente seguindo prompt_templates.md
-    # 3. Mescle os campos resultantes nesta iteração:
-    chunk['tipo_peca'] = '...'           # canônico
-    chunk['partes'] = {...}
-    chunk['pedidos'] = [...]
-    chunk['valores'] = {...}
-    chunk['fatos_relevantes'] = [...]
-    chunk['decisao'] = '...'             # quando aplicável
-    chunk['acordao_detail'] = {...}      # quando ACÓRDÃO
-    # ... demais campos conforme tipo_peca
-analyzed = {'analysis_version': '2.0', **idx, 'chunks': idx['chunks']}
-json.dump(analyzed, open('<output_dir>/analyzed.json','w'), ensure_ascii=False, indent=2)
+```bash
+python3 $SKILL_DIR/scripts/analyzed_init.py \
+  --index <output_dir>/index.json \
+  --output <output_dir>/analyzed.json
 ```
 
-**Quando o chunker agrupa peças (issue #3):** se o chunker criar 1 arquivo físico contendo várias peças (ex.: laudo + sentença + apelação juntos), você tem duas opções:
+Cria `analyzed.json` com todos os campos técnicos (`index`, `label`, `char_count`, `chunk_file`, `primary_date`, `dates_found`, `page_range`, `ocr_confidence`) preservados, e cada chunk marcado com `_pending_analysis: true`.
 
-- **Opção A — split semântico (preferido):** mantenha o `chunk_file` original, mas adicione múltiplas entradas em `chunks[]` que apontem para ele, cada uma com `tipo_peca` próprio. Use índices repetidos com sufixo (`"0a"`, `"0b"`) ou mantenha índices únicos preservando `chunk_file` repetido. Importante: o integrity_gate aceita N entradas → 1 arquivo físico desde que `chunk_file` seja idêntico.
-- **Opção B — peça dominante:** identifique a peça mais importante do agrupamento (geralmente a decisória — sentença, acórdão) e use ela como `tipo_peca` do chunk; documente as outras em `fatos_relevantes` ou `acordao_detail`.
+#### Step 3b — Analise cada chunk individualmente (um Write por chunk)
 
-Salvar resultado consolidado em `<output_dir>/analyzed.json`.
+Para **cada arquivo** em `<output_dir>/chunks/NN-*.txt`:
+
+1. **Read** o conteúdo do arquivo de chunk (não invente conteúdo — leia o texto real).
+2. **Identifique o `tipo_peca`** consultando [piece_type_taxonomy.json](references/piece_type_taxonomy.json). Use o nome canônico exato (ex.: `"PETIÇÃO INICIAL"`, `"SENTENÇA"`, `"ACÓRDÃO"`).
+3. **Aplique o prompt Análise Per-Chunk** de [prompt_templates.md](references/prompt_templates.md#1-análise-per-chunk-extração-estruturada) mentalmente ao conteúdo lido.
+4. **Para chunks `ACÓRDÃO`**, também aplicar **Parsing Tripartite** de [prompt_templates.md](references/prompt_templates.md#3-parsing-tripartite-de-acórdão) e popular `acordao_structure` com `{ementa, relatorio, voto_relator, votos_divergentes[], dispositivo, resultado, votacao}`.
+5. **Write** o resultado em `<output_dir>/chunks/NN.analysis.json` conforme o schema [chunk_analysis_schema.json](references/chunk_analysis_schema.json).
+
+**Regra fundamental:** um `Write` por chunk. Não escreva um script Python que popula múltiplos arquivos de uma vez. O padrão correto é a mesma receita repetida N vezes — uma por chunk físico — cada uma independente da anterior.
+
+**Campos obrigatórios por tipo de peça:**
+
+| `tipo_peca` | Campos mínimos |
+|---|---|
+| Qualquer | `index`, `tipo_peca` |
+| `PETIÇÃO INICIAL`, `RECONVENÇÃO` | + `partes`, `pedidos[]`, `valores`, `fatos_relevantes[]` |
+| `CONTESTAÇÃO`, `RÉPLICA` | + `partes`, `argumentos_chave[]`, `fatos_relevantes[]` |
+| `SENTENÇA`, `DESPACHO` | + `decisao`, `valores`, `fatos_relevantes[]` |
+| `ACÓRDÃO` | + `decisao`, `acordao_structure`, `valores`, `fatos_relevantes[]` |
+| `APELAÇÃO`, `AGRAVO`, `RECURSO ESPECIAL`, `RECURSO EXTRAORDINÁRIO` | + `pedidos[]`, `argumentos_chave[]`, `artigos_lei[]` |
+| `LAUDO PERICIAL` | + `fatos_relevantes[]`, `resumo` |
+
+Campos adicionais recomendados: `artigos_lei[]`, `jurisprudencia[]`, `binding_precedents[]`, `prazos[]`, `citation_spans[]` (trechos literais do texto fonte fundamentando as afirmações estruturadas).
+
+**Quando o chunker agrupa peças num único arquivo físico:** se o arquivo `chunks/02-laudo-pericial.txt` contém na verdade *laudo + sentença + apelação*, você tem duas opções:
+
+- **Split semântico (preferido):** escreva múltiplos arquivos de análise para o mesmo chunk físico:
+  - `chunks/02.analysis.json` — `{"index": 2, "tipo_peca": "LAUDO PERICIAL", ...}`
+  - `chunks/02a.analysis.json` — `{"index": "2a", "tipo_peca": "SENTENÇA", "chunk_file_override": "chunks/02-laudo-pericial.txt", ...}`
+  - `chunks/02b.analysis.json` — `{"index": "2b", "tipo_peca": "APELAÇÃO", "chunk_file_override": "chunks/02-laudo-pericial.txt", ...}`
+  O `merge_chunk_analysis.py` valida e cria N entradas em `analyzed.chunks[]` todas apontando para o mesmo arquivo físico.
+- **Peça dominante:** use apenas `02.analysis.json` com o `tipo_peca` mais importante do agrupamento (geralmente a decisória — sentença, acórdão) e documente as outras em `fatos_relevantes`.
+
+#### Step 3c — Consolide os arquivos de análise
+
+```bash
+python3 $SKILL_DIR/scripts/merge_chunk_analysis.py \
+  --analyzed <output_dir>/analyzed.json \
+  --chunks-dir <output_dir>/chunks/ \
+  --output <output_dir>/analyzed.json
+```
+
+O merge script:
+- Valida cada `chunks/NN.analysis.json` contra [chunk_analysis_schema.json](references/chunk_analysis_schema.json)
+- Mescla os campos semânticos nas entradas correspondentes de `analyzed.chunks[]`
+- Processa split-semantic (arquivos com sufixos `a`, `b`, etc.) criando entradas adicionais
+- Falha com erro claro se algum chunk físico não tiver arquivo de análise correspondente
+- Avisa se detectar scripts helper (`build_analyzed.py` etc.) no diretório
+
+Referência de entidades: [brazilian_legal_entities.md](references/brazilian_legal_entities.md).
 
 ### Step 4: Schema Validation + Content Quality Check
 
@@ -279,14 +289,33 @@ Salvar resultado consolidado em `<output_dir>/analyzed.json`.
 python3 $SKILL_DIR/scripts/schema_validator.py --input <output_dir>/analyzed.json
 ```
 
-Se falhar, corrigir o JSON e re-validar. Repetir até válido.
+Se falhar, corrigir os `chunks/NN.analysis.json` específicos indicados no erro e re-rodar `merge_chunk_analysis.py` antes de re-validar. Repetir até válido.
 
-**Depois do schema OK, rode o sanity check de qualidade:**
+**Depois do schema OK, rode o quality gate bloqueante com plano de retry:**
+
 ```bash
-python3 $SKILL_DIR/scripts/content_quality_check.py --input <output_dir>/analyzed.json
+python3 $SKILL_DIR/scripts/content_quality_check.py \
+  --input <output_dir>/analyzed.json \
+  --strict \
+  --per-chunk-retry-plan
 ```
 
-Esse script é **não-bloqueante** (sempre exit 0) — ele lista warnings em stderr quando os campos canônicos estão suspeitamente vazios. Se aparecerem mensagens tipo `WARN: 0/4 chunks têm campo 'tipo_peca' populado`, **volte ao Step 3** e re-faça a análise per-chunk preenchendo os campos faltantes. Não prossiga com analyzed.json esqueleto — os passos seguintes vão produzir vault Obsidian vazio.
+Se `--strict` retornar exit 1, o stdout vai listar **exatamente** quais chunks precisam ser re-analisados e quais campos estão faltando. Exemplo:
+
+```
+Chunks precisando re-análise:
+  [0] PETIÇÃO INICIAL (chunks/00-peticao-inicial.txt) → faltam: pedidos, valores
+  [3] SENTENÇA (chunks/03-sentenca.txt) → faltam: decisao
+```
+
+**Retry loop direcionado (max 2 iterações):**
+1. Para cada chunk listado, faça **apenas** o que o plano pede:
+   - Read `<chunk_file>`
+   - Re-analise preenchendo os `missing_fields`
+   - Write `chunks/<NN>.analysis.json` atualizado
+2. Re-rode `merge_chunk_analysis.py` para consolidar
+3. Re-rode `content_quality_check.py --strict --per-chunk-retry-plan`
+4. Se ainda houver retry após 2 iterações, prossiga e warn no relatório final — não entre em loop infinito.
 
 ### Step 5: Cross-Synthesis
 
@@ -325,6 +354,14 @@ Complementar com prompt **Avaliação de Risco** de [prompt_templates.md](refere
 
 Merge contradictions, instances, prazos e risk no `analyzed.json` final. Re-validar com `schema_validator.py`.
 
+### Step 8.5: Monetary Recalculations (Lei 14.905/2024)
+
+```bash
+python3 $SKILL_DIR/scripts/finalize_legacy.py --input <output_dir>/analyzed.json --inplace
+```
+
+Detecta condenações monetárias cruzando o marco de 30/08/2024 e gera `monetary_recalculations[]` com breakdown por período (juros 1% a.m. até 29/08/2024, SELIC - IPCA após). Heurística conservadora: só recalcula quando há data E valor de condenação.
+
 ### Step 9: Obsidian Export
 
 ```bash
@@ -333,15 +370,47 @@ python3 $SKILL_DIR/scripts/obsidian_export.py --analysis <output_dir>/analyzed.j
 
 Gera vault com 7 views: `_INDEX`, `_TIMELINE`, `_CONTRADIÇÕES`, `_ENTIDADES`, `_RISCO`, `_INSTÂNCIAS`, `_PRAZOS`.
 
-### Step 10: Report to User
+### Step 9a: Strategic Recommendations
 
-Apresentar ao usuário:
-- Resumo executivo do processo
-- Peças encontradas (tabela)
-- Contradições graves
-- Prazos ativos/vencidos
-- Nível de risco (ALTO/MÉDIO/BAIXO)
-- Caminho do vault Obsidian
+Gere recomendações estratégicas por polo seguindo o prompt **Geração de Recomendações Estratégicas** de [prompt_templates.md](references/prompt_templates.md#7-geração-de-recomendações-estratégicas).
+
+Use os outputs já produzidos (`analyzed.json`, `contradictions.json`, `instances.json`, `risk.json`, `prazos.json`, `monetary_recalculations` do Step 8.5) como input. Produza 3-5 recomendações por polo, cada uma com `evidence_quote` verbatim obrigatório.
+
+Write `<output_dir>/recommendations.json` conforme [agent_schemas/recommendations_output.json](references/agent_schemas/recommendations_output.json).
+
+Validar:
+```bash
+python3 $SKILL_DIR/scripts/agent_io.py validate --agent recommendations --input <output_dir>/recommendations.json
+```
+
+Se falhar, corrigir as recomendações (provavelmente faltou `evidence_quote` em alguma) e re-validar.
+
+### Step 9b: Generate Executive Report
+
+```bash
+python3 $SKILL_DIR/scripts/generate_report.py \
+  --analyzed <output_dir>/analyzed.json \
+  --contradictions <output_dir>/contradictions.json \
+  --instances <output_dir>/instances.json \
+  --prazos <output_dir>/prazos.json \
+  --risk <output_dir>/risk.json \
+  --recommendations <output_dir>/recommendations.json \
+  --output <output_dir>/REPORT.md
+```
+
+Gera `REPORT.md` — relatório executivo markdown consolidado com: resumo executivo, caixas de alerta (art. 942, Lei 14.905, prazos urgentes), tabela de peças, contradições com citações verbatim, avaliação de risco, recomendações estratégicas por polo, cronograma Mermaid, prazos e listagem de arquivos.
+
+### Step 10: Present Report to User
+
+O `REPORT.md` gerado no Step 9b **é** o entregável final. Use-o literalmente como a resposta ao usuário:
+
+1. Read `<output_dir>/REPORT.md`
+2. Apresente o conteúdo markdown como sua mensagem final — **não re-resuma, não parafraseie**. O relatório já é o resumo, e reproduzibilidade exige que o que o usuário vê seja exatamente o que foi escrito em disco.
+3. Ao final, indique o caminho completo dos arquivos-chave:
+   - `<output_dir>/REPORT.md` — este relatório (markdown copiável)
+   - `<output_dir>/obsidian/` — vault Obsidian navegável
+
+**Regra:** se você se pegar reescrevendo o conteúdo do REPORT.md com palavras diferentes, pare. O ponto do Step 9b é que o relatório é reproduzível e auditável — apresente o arquivo como gerado.
 
 ---
 

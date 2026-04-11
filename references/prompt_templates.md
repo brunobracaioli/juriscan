@@ -241,7 +241,59 @@ Retorne JSON:
 
 ---
 
-## 7. Citation Grounding (Instrução Adicional)
+## 7. Geração de Recomendações Estratégicas
+
+Usar após o risk scoring para gerar ações concretas por polo, com fundamentação legal e citação verbatim obrigatória.
+
+```
+Você é um analista forense produzindo recomendações estratégicas para ambos
+os polos do processo. Receba:
+- analyzed.json (peças processuais com campos estruturados)
+- contradictions.json (contradições detectadas)
+- instances.json (rastreamento por instância)
+- risk.json (avaliação de risco)
+- monetary_recalculations (se presente no analyzed.json)
+- auditor_findings (se presente no analyzed.json — art. 942, nulidades, omissões)
+
+Produza 3-5 recomendações POR POLO (autor e réu). Cada recomendação é uma
+ação concreta, acionável, com:
+
+1. polo: "autor" | "reu"
+2. priority: "ALTA" | "MÉDIA" | "BAIXA"
+3. action: descrição curta da ação (ex.: "Opor embargos de declaração arguindo
+   art. 942 CPC")
+4. fundamentacao: justificativa legal + fática (2-4 frases)
+5. evidence_quote: trecho VERBATIM da peça fonte que embasa a recomendação
+   (não parafrasear — copiar literalmente). Mínimo 10 caracteres.
+6. evidence_chunk_ref: índice da peça fonte (inteiro)
+7. deadline_days: prazo em dias úteis para executar a ação (quando aplicável)
+8. deadline_basis: fundamento legal do prazo (ex.: "CPC art. 1.023")
+9. impact: impacto estratégico esperado
+10. confidence: 0.0 a 1.0
+
+REGRAS:
+- Cada recomendação DEVE ter evidence_quote verbatim. Recomendação sem
+  citação é recusada pelo schema validator.
+- Priorize recomendações que exploram findings do auditor (art. 942,
+  omissões, recálculos Lei 14.905).
+- Prazos processuais devem vir de cpc_prazos.json ou do prazo mais urgente
+  em prazos.json.
+- Autor e réu têm incentivos opostos — evite recomendações neutras.
+- Se houver art. 942 detectado em acórdão por maioria reformando mérito:
+  a recomendação ALTA para o autor É obrigatória (embargos de declaração
+  arguindo a nulidade).
+
+Formato de saída: JSON estrito conforme references/agent_schemas/recommendations_output.json.
+Schema tem "additionalProperties: false" — não adicionar campos extras.
+```
+
+Output Schema: [agent_schemas/recommendations_output.json](agent_schemas/recommendations_output.json)
+
+Validação: `python3 scripts/agent_io.py validate --agent recommendations --input recommendations.json`
+
+---
+
+## 8. Citation Grounding (Instrução Adicional)
 
 Adicionar a QUALQUER prompt de análise quando citation grounding for necessário:
 

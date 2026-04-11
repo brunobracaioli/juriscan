@@ -213,3 +213,252 @@ def test_cli_invalid_json_exit_2(tmp_path):
         capture_output=True, text=True,
     )
     assert r.returncode == 2
+
+
+# ---------- A.4.2: chunks_needing_retry per-chunk feedback ----------
+
+def test_evaluate_returns_chunks_needing_retry_key():
+    r = evaluate({"chunks": []})
+    assert "chunks_needing_retry" in r
+
+
+def test_chunks_needing_retry_lists_missing_fields_per_type():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "PETIÇÃO INICIAL",
+                "chunk_file": "chunks/00-peticao.txt",
+                # Missing: pedidos, fatos_relevantes, valores
+                "partes": {"autor": ["X"]},
+            },
+            {
+                "index": 1,
+                "tipo_peca": "SENTENÇA",
+                "chunk_file": "chunks/01-sentenca.txt",
+                # Missing: decisao, valores
+                "fatos_relevantes": ["fact"],
+            },
+        ],
+    }
+    r = evaluate(analyzed)
+    retry = r["chunks_needing_retry"]
+    assert len(retry) == 2
+
+    by_idx = {entry["index"]: entry for entry in retry}
+    assert 0 in by_idx
+    assert 1 in by_idx
+
+    p0 = by_idx[0]
+    assert p0["tipo_peca"] == "PETIÇÃO INICIAL"
+    assert p0["chunk_file"] == "chunks/00-peticao.txt"
+    assert "pedidos" in p0["missing_fields"]
+    assert "fatos_relevantes" in p0["missing_fields"]
+    assert "valores" in p0["missing_fields"]
+
+    p1 = by_idx[1]
+    assert "decisao" in p1["missing_fields"]
+    assert "valores" in p1["missing_fields"]
+
+
+def test_chunks_needing_retry_flags_missing_tipo_peca():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [{"index": 0, "chunk_file": "chunks/00.txt"}],
+    }
+    r = evaluate(analyzed)
+    retry = r["chunks_needing_retry"]
+    assert len(retry) == 1
+    assert retry[0]["missing_fields"] == ["tipo_peca"]
+
+
+def test_chunks_needing_retry_empty_when_all_complete():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "PETIÇÃO INICIAL",
+                "chunk_file": "chunks/00.txt",
+                "partes": {"autor": ["X"]},
+                "pedidos": ["p"],
+                "fatos_relevantes": ["f"],
+                "valores": {"causa": "R$ 1.000,00"},
+            },
+            {
+                "index": 1,
+                "tipo_peca": "SENTENÇA",
+                "chunk_file": "chunks/01.txt",
+                "decisao": "JULGO PROCEDENTE",
+                "valores": {"condenacao": "R$ 500,00"},
+                "fatos_relevantes": ["f"],
+            },
+        ],
+    }
+    r = evaluate(analyzed)
+    assert r["chunks_needing_retry"] == []
+
+
+def test_cli_strict_fails_on_retry_needed(tmp_path):
+    """--strict should fail when chunks_needing_retry is non-empty, even if
+    there are no global warnings."""
+    analyzed = tmp_path / "analyzed.json"
+    analyzed.write_text(json.dumps({
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "SENTENÇA",
+                "chunk_file": "chunks/00.txt",
+                # Missing decisao — triggers retry
+            }
+        ],
+    }), encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "content_quality_check.py"),
+         "--input", str(analyzed), "--strict"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 1
+
+
+def test_cli_per_chunk_retry_plan_prints_plan(tmp_path):
+    analyzed = tmp_path / "analyzed.json"
+    analyzed.write_text(json.dumps({
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "PETIÇÃO INICIAL",
+                "chunk_file": "chunks/00-peticao.txt",
+            }
+        ],
+    }), encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "content_quality_check.py"),
+         "--input", str(analyzed), "--per-chunk-retry-plan"],
+        capture_output=True, text=True,
+    )
+    assert "PETIÇÃO INICIAL" in r.stdout
+    assert "chunks/00-peticao.txt" in r.stdout
+    assert "faltam:" in r.stdout
+
+
+def test_art_942_grounding_required_for_maioria_reform():
+    """ACÓRDÃO by maioria reforming merit must have citation_spans grounding
+    the art. 942 finding with verbatim tokens."""
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "ACÓRDÃO",
+                "chunk_file": "chunks/00-acordao.txt",
+                "decisao": "DERAM PARCIAL PROVIMENTO",
+                "valores": {"condenacao": "R$ 100.000,00"},
+                "fatos_relevantes": ["f"],
+                "acordao_structure": {
+                    "votacao": "MAIORIA",
+                    "resultado": "PARCIALMENTE_PROVIDO",
+                },
+                # Missing citation_spans with the verbatim tokens
+                "citation_spans": [],
+            }
+        ],
+    }
+    r = evaluate(analyzed)
+    assert any("942" in w for w in r["warnings"])
+    assert any(
+        "citation_spans" in ", ".join(e.get("missing_fields", []))
+        for e in r["chunks_needing_retry"]
+    )
+
+
+def test_art_942_grounding_satisfied_with_verbatim_token():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "ACÓRDÃO",
+                "chunk_file": "chunks/00.txt",
+                "decisao": "DERAM PARCIAL PROVIMENTO",
+                "valores": {"condenacao": "R$ 100.000,00"},
+                "fatos_relevantes": ["f"],
+                "acordao_structure": {
+                    "votacao": "MAIORIA",
+                    "resultado": "PARCIALMENTE_PROVIDO",
+                },
+                "citation_spans": [
+                    {
+                        "assertion": "reforma por maioria",
+                        "source_text": "Por maioria de votos, vencido o Des. X, deram parcial provimento",
+                    }
+                ],
+            }
+        ],
+    }
+    r = evaluate(analyzed)
+    assert not any("942" in w for w in r["warnings"])
+
+
+def test_art_942_grounding_not_required_when_unanime():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "ACÓRDÃO",
+                "chunk_file": "chunks/00.txt",
+                "decisao": "DERAM PROVIMENTO",
+                "valores": {"condenacao": "R$ 100.000,00"},
+                "fatos_relevantes": ["f"],
+                "acordao_structure": {
+                    "votacao": "UNÂNIME",
+                    "resultado": "PROVIDO",
+                },
+                "citation_spans": [],
+            }
+        ],
+    }
+    r = evaluate(analyzed)
+    assert not any("942" in w for w in r["warnings"])
+
+
+def test_art_942_grounding_not_required_when_not_reform():
+    analyzed = {
+        "schema_version": "2.0",
+        "chunks": [
+            {
+                "index": 0,
+                "tipo_peca": "ACÓRDÃO",
+                "chunk_file": "chunks/00.txt",
+                "decisao": "NEGARAM PROVIMENTO",
+                "valores": {"condenacao": "R$ 100.000,00"},
+                "fatos_relevantes": ["f"],
+                "acordao_structure": {
+                    "votacao": "MAIORIA",
+                    "resultado": "DESPROVIDO",
+                },
+                "citation_spans": [],
+            }
+        ],
+    }
+    r = evaluate(analyzed)
+    assert not any("942" in w for w in r["warnings"])
+
+
+def test_cli_json_output_includes_chunks_needing_retry(tmp_path):
+    analyzed = tmp_path / "analyzed.json"
+    analyzed.write_text(json.dumps({
+        "chunks": [{"index": 0, "tipo_peca": "SENTENÇA"}],
+    }), encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "content_quality_check.py"),
+         "--input", str(analyzed), "--json"],
+        capture_output=True, text=True,
+    )
+    data = json.loads(r.stdout)
+    assert "chunks_needing_retry" in data
+    assert len(data["chunks_needing_retry"]) == 1

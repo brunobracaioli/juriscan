@@ -68,6 +68,7 @@ KNOWN_AGENTS = {
     "auditor",
     "verificador",
     "sintetizador",
+    "recommendations",
 }
 
 # Agents that share a schema file name != agent name.
@@ -80,6 +81,7 @@ _SCHEMA_FILE_OVERRIDES = {
     "parser": "parser_output.json",
     "verificador": "verificador_output.json",
     "sintetizador": "sintetizador_output.json",
+    "recommendations": "recommendations_output.json",
 }
 
 

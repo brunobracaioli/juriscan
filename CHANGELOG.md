@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0-legacy] - 2026-04-11
+
+**"The Uau Release"** — A transformação da saída do pipeline legacy de "6 JSONs + vault Obsidian + narrativa verbal do Claude" para **"um comando → um relatório executivo markdown, reproduzível, com citações verbatim, que fica bonito no terminal"**. Os dados já estavam corretos no v3.0.1 — o que mudou foi a apresentação e o processo de construção.
+
+### Added
+
+- `scripts/generate_report.py` — gerador de `REPORT.md` executivo consolidando
+  `analyzed.json` + `contradictions.json` + `prazos.json` + `risk.json` +
+  `recommendations.json` em um único documento markdown com:
+  - Cabeçalho com metadados do processo e badge de risco
+  - Resumo executivo gerado a partir dos campos estruturados
+  - Caixas de alerta críticos (Art. 942 CPC, Lei 14.905/2024, prazos urgentes)
+  - Tabela de peças processuais
+  - Contradições agrupadas por impacto com citações verbatim das peças fonte
+  - Avaliação de risco com breakdown por dimensão (processual/mérito/monetário)
+  - Recomendações estratégicas por polo ordenadas por prioridade, cada uma
+    com `evidence_quote` verbatim obrigatória
+  - Cronograma Mermaid gantt (quando ≥ 3 peças com datas)
+  - Dashboard de prazos
+  - 30 testes unit + integration
+- `scripts/analyzed_init.py` — inicializa skeleton de `analyzed.json` a partir
+  de `index.json`, preservando campos técnicos (`chunk_file`, `char_count`,
+  `page_range`, etc.) e marcando chunks com `_pending_analysis: true`
+- `scripts/merge_chunk_analysis.py` — consolida arquivos per-chunk
+  (`chunks/NN.analysis.json`) no `analyzed.json`, com validação via schema
+  Draft-07, suporte a split-semantic (múltiplas peças num arquivo físico) e
+  detecção de scripts helper anti-pattern (`build_analyzed.py`)
+- `scripts/finalize_legacy.py` — recálculo Lei 14.905/2024 standalone para o
+  pipeline legacy. Varre `chunks[].valores.condenacao` diretamente, detecta
+  condenações cruzando o marco de 30/08/2024 e adiciona
+  `monetary_recalculations[]` com juros pré-cutover calculados (1% a.m.)
+- `references/chunk_analysis_schema.json` — schema Draft-07 strict
+  (`additionalProperties: false`) para arquivos per-chunk, com enum de
+  `tipo_peca` vindo de `piece_type_taxonomy.json`
+- `references/agent_schemas/recommendations_output.json` — schema para
+  `recommendations.json` com `polo`, `priority`, `action`, `fundamentacao`,
+  `evidence_quote` (obrigatório), `evidence_chunk_ref`, `deadline_days`,
+  `deadline_basis`, `impact`, `confidence`
+- `references/prompt_templates.md` seção 7 "Geração de Recomendações
+  Estratégicas" — prompt com regras explícitas, incluindo obrigatoriedade de
+  `evidence_quote` verbatim e recomendação ALTA compulsória quando há art. 942
+  detectado
+- Enforcement de citation grounding em `content_quality_check.py`:
+  `_check_art_942_grounding()` exige citation_spans com tokens verbatim
+  (`ampliação`, `colegiado`, `maioria`, `vencido`) quando ACÓRDÃO por maioria
+  reforma mérito
+- Plano de retry per-chunk em `content_quality_check.py`: novo campo
+  `chunks_needing_retry[]` no output JSON identificando exatamente qual chunk
+  precisa ser re-analisado e quais campos estão faltando; flag
+  `--per-chunk-retry-plan` imprime plano legível
+- Agent type `recommendations` registrado em `scripts/agent_io.py` com
+  validação via `agent_io.py validate --agent recommendations`
+
+### Changed
+
+- **SKILL.md Step 3 reestruturado** — causa raiz do helper-script anti-pattern
+  (`build_analyzed.py` do v3.0.1) endereçada por mudança de workflow, não por
+  mais proibições. O novo fluxo tem 3 sub-steps:
+  1. `analyzed_init.py` cria skeleton com campos técnicos
+  2. Para cada chunk: Read + Write `chunks/NN.analysis.json` (um por chunk)
+  3. `merge_chunk_analysis.py` consolida com validação strict
+- **SKILL.md Step 4** — `content_quality_check.py --strict --per-chunk-retry-plan`
+  é bloqueante. Retry loop direcionado: Claude vê exatamente quais chunks
+  refazer, max 2 iterações
+- **SKILL.md Step 8.5** (novo) — `finalize_legacy.py --inplace` detecta e
+  aplica recálculo Lei 14.905/2024 automaticamente
+- **SKILL.md Step 9a** (novo) — geração de `recommendations.json` após risk
+  scoring, via prompt template dedicado
+- **SKILL.md Step 9b** (novo) — `generate_report.py` produz `REPORT.md`
+- **SKILL.md Step 10 reescrito** — a resposta final do Claude ao usuário **é**
+  literalmente o conteúdo de `REPORT.md`, não uma paráfrase. Regra explícita:
+  "não re-resuma, não parafraseie — o relatório é reproduzível e auditável"
+- `content_quality_check.py` — `EXPECTED_FIELDS_BY_TYPE["ACÓRDÃO"]` corrigido
+  de `acordao_detail` (campo legacy incorreto) para `acordao_structure`
+  (campo canônico no schema v2)
+
+### Fixed
+
+- `generate_report.py` renderização de `monetary_recalculations` agora
+  suporta ambos os shapes: `{periodo_1, periodo_2}` (finalize.py agents) e
+  `{periods: [...]}` (finalize_legacy.py)
+- `generate_report.py` chunk_ref=0 falsy bug: referências de peça usando
+  `.get("chunk_ref") or ...` agora usam `is None` check explícito,
+  preservando chunk_ref=0 como referência válida
+
+### Documentation
+
+- CHANGELOG.md (esta entrada)
+- Plano detalhado em Part III do spec-driven plan
+  (`~/.claude/plans/fluffy-honking-graham.md`)
+
+### Migration notes
+
+Retrocompat total. Schema v2 continua válido. `analyzed.json` antigos
+continuam abrindo no `obsidian_export.py`. Pipeline agents não foi tocado.
+
+Para beneficiar-se do novo relatório executivo em análises antigas, rode:
+```bash
+python3 scripts/generate_report.py \
+  --analyzed old-output/analyzed.json \
+  --contradictions old-output/contradictions.json \
+  --prazos old-output/prazos.json \
+  --risk old-output/risk.json \
+  --output old-output/REPORT.md
+```
+
+
 ## [3.0.1] - 2026-04-11
 
 Quality patch addressing a friction surfaced by the first real-world smoke
