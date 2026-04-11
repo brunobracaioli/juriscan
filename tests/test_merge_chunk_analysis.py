@@ -172,6 +172,8 @@ def test_merge_missing_required_field_rejected(tmp_path):
 def test_merge_split_semantic_creates_additional_entries(tmp_path):
     """Chunk 01 physically contains both SENTENÇA and a pending APELAÇÃO.
     User creates 01.analysis.json (SENTENÇA) and 01a.analysis.json (APELAÇÃO).
+    After v3.1.1 fix, the APELAÇÃO is inserted right after SENTENÇA and
+    all indices are renumbered sequentially.
     """
     skel = _skeleton()
     _write_analysis(tmp_path, "00", _sample_peticao(0))
@@ -190,8 +192,12 @@ def test_merge_split_semantic_creates_additional_entries(tmp_path):
 
     assert errors == []
     assert len(merged["chunks"]) == 3
-    apelacao = merged["chunks"][-1]
+    # Order: PETIÇÃO (0), SENTENÇA (1), APELAÇÃO (2 — inserted after parent 1)
+    assert merged["chunks"][0]["tipo_peca"] == "PETIÇÃO INICIAL"
+    assert merged["chunks"][1]["tipo_peca"] == "SENTENÇA"
+    apelacao = merged["chunks"][2]
     assert apelacao["tipo_peca"] == "APELAÇÃO"
+    assert apelacao["index"] == 2  # Renumbered to integer
     # Split-semantic preserves the parent's physical file
     assert apelacao["chunk_file"] == "chunks/01-sentenca.txt"
 
@@ -269,6 +275,114 @@ def test_cli_no_analysis_files(tmp_path):
         "--output", str(tmp_path / "out.json"),
     ])
     assert rc == 1
+
+
+def test_merge_renumbers_to_sequential_integers(tmp_path):
+    """v3.1.1 fix: after merge, all chunks[].index MUST be sequential
+    integers starting at 0, even when split-semantic created entries
+    with string indices like '1a'."""
+    skel = _skeleton()  # 2 chunks: 0, 1
+    _write_analysis(tmp_path, "00", _sample_peticao(0))
+    _write_analysis(tmp_path, "01", _sample_sentenca(1))
+    split = {"index": "1a", "tipo_peca": "APELAÇÃO", "pedidos": ["reforma"]}
+    _write_analysis(tmp_path, "01a", split)
+    split_b = {"index": "1b", "tipo_peca": "CONTRARRAZÕES"}
+    _write_analysis(tmp_path, "01b", split_b)
+
+    found = discover_analysis_files(tmp_path)
+    merged, errors = merge(skel, found, _load_schema())
+
+    assert errors == []
+    assert len(merged["chunks"]) == 4
+    # ALL indices must be integers, sequential starting at 0
+    for i, ch in enumerate(merged["chunks"]):
+        assert ch["index"] == i, f"chunk[{i}] has index={ch['index']!r}"
+        assert isinstance(ch["index"], int)
+
+
+def test_merge_split_semantic_inserts_after_parent(tmp_path):
+    """v3.1.1 fix: suffixed children should appear IMMEDIATELY after their
+    parent in the merged list, not appended at the end. This produces a
+    natural chronological flow when split-semantic is used."""
+    # Skeleton with 3 chunks: 0, 1, 2
+    skel = {
+        "analysis_version": "2.0",
+        "chunks": [
+            {"index": 0, "label": "A", "char_count": 100, "chunk_file": "chunks/00.txt"},
+            {"index": 1, "label": "B", "char_count": 100, "chunk_file": "chunks/01.txt"},
+            {"index": 2, "label": "C", "char_count": 100, "chunk_file": "chunks/02.txt"},
+        ],
+    }
+    _write_analysis(tmp_path, "00", {"index": 0, "tipo_peca": "PETIÇÃO INICIAL"})
+    _write_analysis(tmp_path, "01", {"index": 1, "tipo_peca": "CONTESTAÇÃO"})
+    # Chunk 1 split-semantic: also contains a RÉPLICA
+    _write_analysis(tmp_path, "01a", {"index": "1a", "tipo_peca": "RÉPLICA"})
+    _write_analysis(tmp_path, "02", {"index": 2, "tipo_peca": "SENTENÇA"})
+
+    found = discover_analysis_files(tmp_path)
+    merged, errors = merge(skel, found, _load_schema())
+
+    assert errors == []
+    # Expected order: PETIÇÃO (0), CONTESTAÇÃO (1), RÉPLICA (2 — child of parent 1), SENTENÇA (3)
+    tipos = [ch["tipo_peca"] for ch in merged["chunks"]]
+    assert tipos == ["PETIÇÃO INICIAL", "CONTESTAÇÃO", "RÉPLICA", "SENTENÇA"]
+    # And indices are all sequential integers
+    assert [ch["index"] for ch in merged["chunks"]] == [0, 1, 2, 3]
+
+
+def test_merge_preserves_original_index_for_debugging(tmp_path):
+    skel = _skeleton()
+    _write_analysis(tmp_path, "00", _sample_peticao(0))
+    _write_analysis(tmp_path, "01", _sample_sentenca(1))
+    _write_analysis(tmp_path, "01a", {"index": "1a", "tipo_peca": "APELAÇÃO"})
+
+    found = discover_analysis_files(tmp_path)
+    merged, _errors = merge(skel, found, _load_schema())
+
+    # Numeric parent keeps its old int as original_index
+    assert merged["chunks"][0]["original_index"] == 0
+    assert merged["chunks"][1]["original_index"] == 1
+    # Suffixed child keeps its string as original_index
+    assert merged["chunks"][2]["original_index"] == "1a"
+
+
+def test_merge_multiple_split_children_alphabetical_order(tmp_path):
+    """When a parent has multiple split children (02a, 02b, 02c), they
+    should be inserted in alphabetical order."""
+    skel = {
+        "analysis_version": "2.0",
+        "chunks": [
+            {"index": 2, "label": "MEGA", "char_count": 500, "chunk_file": "chunks/02.txt"},
+        ],
+    }
+    _write_analysis(tmp_path, "02", {"index": 2, "tipo_peca": "LAUDO PERICIAL"})
+    _write_analysis(tmp_path, "02c", {"index": "2c", "tipo_peca": "CONTRARRAZÕES"})
+    _write_analysis(tmp_path, "02a", {"index": "2a", "tipo_peca": "SENTENÇA"})
+    _write_analysis(tmp_path, "02b", {"index": "2b", "tipo_peca": "APELAÇÃO"})
+
+    found = discover_analysis_files(tmp_path)
+    merged, _errors = merge(skel, found, _load_schema())
+
+    tipos = [ch["tipo_peca"] for ch in merged["chunks"]]
+    assert tipos == ["LAUDO PERICIAL", "SENTENÇA", "APELAÇÃO", "CONTRARRAZÕES"]
+
+
+def test_merge_output_passes_integer_index_contract(tmp_path):
+    """Regression test for the v3.1.0-legacy bug: schema_validator.py
+    (output_schema_v2.json) requires integer indices. The output of
+    merge() must satisfy this even when split-semantic was used."""
+    skel = _skeleton()
+    _write_analysis(tmp_path, "00", _sample_peticao(0))
+    _write_analysis(tmp_path, "01", _sample_sentenca(1))
+    _write_analysis(tmp_path, "01a", {"index": "1a", "tipo_peca": "APELAÇÃO"})
+    _write_analysis(tmp_path, "01b", {"index": "1b", "tipo_peca": "CONTRARRAZÕES"})
+
+    found = discover_analysis_files(tmp_path)
+    merged, _errors = merge(skel, found, _load_schema())
+
+    # Every index must be exactly an int (not bool, not str, not None)
+    for ch in merged["chunks"]:
+        assert type(ch["index"]) is int  # noqa: E721
 
 
 def test_cli_allow_missing(tmp_path):

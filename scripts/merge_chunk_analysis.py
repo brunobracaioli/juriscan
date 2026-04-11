@@ -117,112 +117,127 @@ def check_helper_scripts(chunks_dir: Path, output_dir: Path) -> list[str]:
 def merge(
     analyzed: dict, analysis_files: dict[str, Path], schema: dict
 ) -> tuple[dict, list[str]]:
-    """Merge analysis files into analyzed.chunks[]. Returns (analyzed, errors)."""
+    """Merge analysis files into analyzed.chunks[]. Returns (analyzed, errors).
+
+    Ordering (Phase A.4.1 + v3.1.1 fix):
+    1. Process numeric chunks in skeleton order.
+    2. Immediately after each parent chunk, insert its suffixed children
+       (01a, 01b, ...) in alphabetical order. This produces a natural
+       chronological flow when split-semantic is used (the split pieces
+       stay next to their physical parent).
+    3. After all merging, RENUMBER every entry to a sequential integer
+       index starting at 0. This guarantees the output satisfies
+       output_schema_v2.json (which requires integer indices) regardless
+       of what string indices the per-chunk files used. The original
+       user-facing index (e.g. "2a") is preserved in `original_index`
+       for debugging.
+    """
     errors: list[str] = []
     chunks = analyzed.get("chunks", []) or []
 
     # Map pending chunks by int index for fast lookup
     pending_by_int_idx = {int(ch["index"]): ch for ch in chunks if "index" in ch}
 
-    # Track which analysis files have been consumed (for split-semantic detection)
-    merged_chunks: list[dict] = []
-    consumed_file_keys: set[str] = set()
-
-    # First pass: numeric-only indexes replace their counterparts
+    # Partition keys into numeric vs suffixed, and group suffixed by parent
     numeric_keys = [k for k in analysis_files if k.isdigit()]
     suffixed_keys = [k for k in analysis_files if not k.isdigit()]
+    suffixed_by_parent: dict[int, list[str]] = {}
+    for key in suffixed_keys:
+        m = re.match(r"^(\d+)", key)
+        if not m:
+            errors.append(
+                f"ERROR: {analysis_files[key]}: suffixed index {key!r} has no numeric prefix"
+            )
+            continue
+        parent_idx = int(m.group(1))
+        suffixed_by_parent.setdefault(parent_idx, []).append(key)
+    for parent_idx in suffixed_by_parent:
+        suffixed_by_parent[parent_idx].sort()
 
+    def _load_and_validate(key: str) -> dict | None:
+        """Load analysis file and validate against chunk_analysis schema.
+        Returns None on error (errors are appended to the outer list)."""
+        path = analysis_files[key]
+        try:
+            analysis = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            errors.append(f"ERROR: {path}: invalid JSON: {e}")
+            return None
+        schema_errors = _validate(analysis, schema, str(path))
+        if schema_errors:
+            errors.extend(schema_errors)
+            return None
+        return analysis
+
+    def _build_suffixed_entry(key: str, analysis: dict, parent: dict) -> dict:
+        """Build a new chunk entry for a suffixed (split-semantic) analysis."""
+        new_entry = {
+            k: parent.get(k)
+            for k in ["char_count", "chunk_file", "page_range", "ocr_confidence"]
+            if k in parent
+        }
+        # Preserve the user-facing string index for debugging
+        new_entry["original_index"] = analysis.get("index", key)
+        new_entry["label"] = analysis.get("tipo_peca", parent.get("label"))
+        # Allow override of chunk_file (split-semantic typically reuses parent's file)
+        if "chunk_file_override" in analysis:
+            new_entry["chunk_file"] = analysis["chunk_file_override"]
+        for field in SEMANTIC_FIELDS:
+            if field in analysis and field != "chunk_file_override":
+                new_entry[field] = analysis[field]
+        return new_entry
+
+    merged_chunks: list[dict] = []
+
+    # Process each parent chunk, then immediately its suffixed children
     for ch in chunks:
         idx = int(ch["index"])
-        str_idx = str(idx).zfill(2) if idx < 10 else str(idx)
-        # Look for file with exact numeric match (00, 01, ..., or 0, 1, ...)
+        # Find the matching numeric analysis file
         key = None
         for candidate in [f"{idx:02d}", str(idx)]:
             if candidate in numeric_keys:
                 key = candidate
                 break
+
         if key is None:
             errors.append(
                 f"ERROR: chunk[{idx}] ({ch.get('label', '?')}) has no matching "
                 f"chunks/{idx:02d}.analysis.json file. Produce one via Write."
             )
             merged_chunks.append(ch)  # Keep skeleton
-            continue
+        else:
+            analysis = _load_and_validate(key)
+            if analysis is None:
+                merged_chunks.append(ch)
+            else:
+                merged = dict(ch)
+                merged.pop("_pending_analysis", None)
+                for field in SEMANTIC_FIELDS:
+                    if field in analysis:
+                        merged[field] = analysis[field]
+                if "tipo_peca" in analysis and analysis["tipo_peca"]:
+                    merged["tipo_peca"] = analysis["tipo_peca"]
+                # Preserve original numeric index as string for reference
+                merged["original_index"] = idx
+                merged_chunks.append(merged)
 
-        # Load and validate the analysis file
-        try:
-            analysis = json.loads(analysis_files[key].read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            errors.append(f"ERROR: {analysis_files[key]}: invalid JSON: {e}")
-            merged_chunks.append(ch)
-            continue
+        # Insert suffixed children immediately after their parent
+        for sk in suffixed_by_parent.get(idx, []):
+            analysis = _load_and_validate(sk)
+            if analysis is None:
+                continue
+            parent = ch  # Technical fields come from the skeleton parent
+            merged_chunks.append(_build_suffixed_entry(sk, analysis, parent))
 
-        schema_errors = _validate(analysis, schema, str(analysis_files[key]))
-        if schema_errors:
-            errors.extend(schema_errors)
-            merged_chunks.append(ch)
-            continue
-
-        merged = dict(ch)
-        merged.pop("_pending_analysis", None)
-        for field in SEMANTIC_FIELDS:
-            if field in analysis:
-                merged[field] = analysis[field]
-        # Prefer tipo_peca as the canonical label if provided
-        if "tipo_peca" in analysis and analysis["tipo_peca"]:
-            merged["tipo_peca"] = analysis["tipo_peca"]
-        merged_chunks.append(merged)
-        consumed_file_keys.add(key)
-
-    # Second pass: suffixed files (split-semantic) append new entries
-    for key in sorted(suffixed_keys):
-        path = analysis_files[key]
-        try:
-            analysis = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            errors.append(f"ERROR: {path}: invalid JSON: {e}")
-            continue
-
-        schema_errors = _validate(analysis, schema, str(path))
-        if schema_errors:
-            errors.extend(schema_errors)
-            continue
-
-        # Find the parent numeric chunk to copy technical fields from
-        m = re.match(r"^(\d+)", key)
-        if not m:
-            errors.append(f"ERROR: {path}: suffixed index {key!r} has no numeric prefix")
-            continue
-        parent_idx = int(m.group(1))
-        parent = pending_by_int_idx.get(parent_idx)
-        if parent is None:
-            errors.append(
-                f"ERROR: {path}: parent chunk {parent_idx} not found in skeleton"
-            )
-            continue
-
-        new_entry = {
-            k: parent.get(k)
-            for k in ["char_count", "chunk_file", "page_range", "ocr_confidence"]
-            if k in parent
-        }
-        new_entry["index"] = analysis.get("index", key)
-        new_entry["label"] = analysis.get("tipo_peca", parent.get("label"))
-        # Allow override of chunk_file (split-semantic may reuse parent's file)
-        if "chunk_file_override" in analysis:
-            new_entry["chunk_file"] = analysis["chunk_file_override"]
-
-        for field in SEMANTIC_FIELDS:
-            if field in analysis and field != "chunk_file_override":
-                new_entry[field] = analysis[field]
-
-        merged_chunks.append(new_entry)
+    # Renumber every entry to sequential integer index — this satisfies
+    # output_schema_v2.json (which requires integer) and keeps downstream
+    # scripts (contradiction_report, instance_tracker) happy.
+    for new_idx, entry in enumerate(merged_chunks):
+        entry["index"] = new_idx
+        entry.pop("_pending_analysis", None)
 
     analyzed["chunks"] = merged_chunks
     analyzed["total_chunks"] = len(merged_chunks)
-    # Drop any remaining pending markers
-    for ch in merged_chunks:
-        ch.pop("_pending_analysis", None)
 
     return analyzed, errors
 

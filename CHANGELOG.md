@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-04-11
+
+Patch fix release after the v3.1.0-legacy smoke test exposed 3 concrete
+bugs. The centerpiece (REPORT.md) and per-chunk file pattern worked, but
+the split-semantic index contract was broken and the pieces table was out
+of chronological order. This patch closes all 3.
+
+### Fixed
+
+- **merge_chunk_analysis.py renumber contract** — string indices from
+  split-semantic per-chunk files (`"1a"`, `"2a"`, etc.) were passed through
+  to `analyzed.json`, where `output_schema_v2.json` rejects non-integer
+  indices. Result: `schema_validator.py` failed on first try and Claude
+  wrote a one-off Python renumber fix-up (a shadow of the v3.0.1 anti-pattern).
+  Now `merge_chunk_analysis.py` renumbers ALL entries to sequential integers
+  (0..N-1) at the end of the merge pass, preserving the original user-facing
+  index as `original_index` for debugging.
+- **merge_chunk_analysis.py suffixed ordering** — suffixed children
+  (`01a`, `01b`) were appended at the end of the merged list instead of
+  being inserted right after their parent. When a physical chunk contained
+  a sequence of pieces (laudo → sentença → apelação → acórdão), the
+  resulting `analyzed.chunks[]` order was scrambled. Now suffixed children
+  are placed immediately after their parent, producing natural
+  chronological flow.
+- **generate_report.py chronological pieces table** — `render_pieces_table()`
+  now sorts chunks by `primary_date` ascending (with fallback to `index`
+  when date is missing or unparseable). Even if the input `analyzed.json`
+  has entries out of order, the rendered table is always chronological.
+- **generate_report.py chronological timeline** — `render_timeline()` now
+  also sorts by date before emitting the Mermaid gantt.
+
+### Changed
+
+- **SKILL.md Step 10 rewritten with LITERAL ONLY rule** — the v3.1.0-legacy
+  smoke test showed Claude enriched his final response with a
+  "Conclusão estratégica" paragraph that was NOT in `REPORT.md`, breaking
+  reproducibility. Step 10 now has absolute, non-negotiable rules:
+  "Cole o conteúdo exato como sua mensagem ao usuário. Caractere por caractere.
+  Zero edições. Zero adições. Zero reformatação." Explicit ban on
+  "Conclusão estratégica", "Observações finais", expanded summaries,
+  re-tabulation, and decorative emojis. Only allowed addition: one line
+  with file paths at the very end.
+
+### Tests
+
+- 406 → 414 passed (+8 new tests):
+  - `test_merge_renumbers_to_sequential_integers`
+  - `test_merge_split_semantic_inserts_after_parent`
+  - `test_merge_preserves_original_index_for_debugging`
+  - `test_merge_multiple_split_children_alphabetical_order`
+  - `test_merge_output_passes_integer_index_contract`
+  - `test_render_pieces_table_sorts_chronologically`
+  - `test_render_pieces_table_missing_date_sorts_last`
+  - `test_render_timeline_sorts_chronologically`
+
 ## [3.1.0-legacy] - 2026-04-11
 
 **"The Uau Release"** — A transformação da saída do pipeline legacy de "6 JSONs + vault Obsidian + narrativa verbal do Claude" para **"um comando → um relatório executivo markdown, reproduzível, com citações verbatim, que fica bonito no terminal"**. Os dados já estavam corretos no v3.0.1 — o que mudou foi a apresentação e o processo de construção.

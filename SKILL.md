@@ -400,17 +400,47 @@ python3 $SKILL_DIR/scripts/generate_report.py \
 
 Gera `REPORT.md` — relatório executivo markdown consolidado com: resumo executivo, caixas de alerta (art. 942, Lei 14.905, prazos urgentes), tabela de peças, contradições com citações verbatim, avaliação de risco, recomendações estratégicas por polo, cronograma Mermaid, prazos e listagem de arquivos.
 
-### Step 10: Present Report to User
+### Step 10: Present Report to User — LITERAL ONLY
 
-O `REPORT.md` gerado no Step 9b **é** o entregável final. Use-o literalmente como a resposta ao usuário:
+**Regra absoluta, não-negociável:** a sua resposta final ao usuário é o **conteúdo literal** do `REPORT.md`. Caractere por caractere. Zero edições. Zero adições. Zero reformatação.
 
-1. Read `<output_dir>/REPORT.md`
-2. Apresente o conteúdo markdown como sua mensagem final — **não re-resuma, não parafraseie**. O relatório já é o resumo, e reproduzibilidade exige que o que o usuário vê seja exatamente o que foi escrito em disco.
-3. Ao final, indique o caminho completo dos arquivos-chave:
-   - `<output_dir>/REPORT.md` — este relatório (markdown copiável)
-   - `<output_dir>/obsidian/` — vault Obsidian navegável
+**Procedimento:**
 
-**Regra:** se você se pegar reescrevendo o conteúdo do REPORT.md com palavras diferentes, pare. O ponto do Step 9b é que o relatório é reproduzível e auditável — apresente o arquivo como gerado.
+1. `Read <output_dir>/REPORT.md`
+2. Cole o conteúdo exato como sua mensagem ao usuário. Nada a mais, nada a menos.
+3. Ao final, uma **única** linha adicional com os paths:
+
+    `Arquivos: <output_dir>/REPORT.md · <output_dir>/obsidian/`
+
+**PROIBIDO:**
+
+- ❌ Adicionar um parágrafo "Conclusão estratégica"
+- ❌ Adicionar um parágrafo "Observações finais" ou "Considerações"
+- ❌ Re-escrever o resumo executivo com mais detalhes que o relatório
+- ❌ Reformatar a tabela de peças com outra estrutura
+- ❌ Adicionar comentários meta ("Como pode-se observar...", "Vale destacar que...")
+- ❌ Inserir emojis decorativos que não estão no relatório
+- ❌ "Enriquecer" qualquer seção com informações que não estão no arquivo em disco
+
+**Por que a regra é absoluta:**
+
+O `REPORT.md` é **reproduzível e auditável**. Duas execuções do mesmo PDF devem produzir relatórios idênticos em disco. Se você enriquece a resposta oralmente, você quebra a reprodutibilidade — o usuário vê uma coisa, o arquivo tem outra, e eles não conseguem provar que é a mesma análise.
+
+**Se você se pegar escrevendo "Conclusão estratégica", "Observação final" ou "Considerações" na sua resposta, PARE imediatamente.** O relatório já contém tudo que precisa ser dito. Confie no template.
+
+**Se você acha que falta algo no REPORT.md:** abra uma issue no GitHub (`https://github.com/brunobracaioli/juriscan/issues`) para melhorar o template no próximo release. Não contorne via paráfrase na resposta.
+
+**Exemplo do que NÃO fazer:**
+
+> [conteúdo do REPORT.md]
+>
+> **Conclusão estratégica:** apesar do risco global ser BAIXO, há uma janela crítica... ← **PROIBIDO**
+
+**Exemplo do que fazer:**
+
+> [conteúdo do REPORT.md exato, literal]
+>
+> Arquivos: /path/to/REPORT.md · /path/to/obsidian/
 
 ---
 

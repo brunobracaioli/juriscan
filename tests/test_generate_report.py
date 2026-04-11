@@ -267,6 +267,52 @@ def test_render_alerts_includes_urgent_prazo():
     assert "apelação" in alerts
 
 
+def test_render_pieces_table_sorts_chronologically():
+    """v3.1.1 fix: pieces table must be sorted by primary_date ascending,
+    regardless of their order in analyzed.chunks[]."""
+    # Intentionally out of chronological order
+    analyzed = {
+        "chunks": [
+            {"index": 0, "tipo_peca": "ACÓRDÃO", "primary_date": "18/03/2025"},
+            {"index": 1, "tipo_peca": "PETIÇÃO INICIAL", "primary_date": "10/01/2024"},
+            {"index": 2, "tipo_peca": "SENTENÇA", "primary_date": "12/12/2024"},
+        ]
+    }
+    table = render_pieces_table(analyzed)
+    # PETIÇÃO must appear before SENTENÇA which must appear before ACÓRDÃO
+    assert table.index("PETIÇÃO INICIAL") < table.index("SENTENÇA") < table.index("ACÓRDÃO")
+
+
+def test_render_pieces_table_missing_date_sorts_last():
+    analyzed = {
+        "chunks": [
+            {"index": 0, "tipo_peca": "DOC_SEM_DATA", "primary_date": None},
+            {"index": 1, "tipo_peca": "PETIÇÃO INICIAL", "primary_date": "10/01/2024"},
+            {"index": 2, "tipo_peca": "SENTENÇA", "primary_date": "12/12/2024"},
+        ]
+    }
+    table = render_pieces_table(analyzed)
+    # Entries with dates come first, then the undated one at the end
+    assert table.index("PETIÇÃO INICIAL") < table.index("DOC_SEM_DATA")
+    assert table.index("SENTENÇA") < table.index("DOC_SEM_DATA")
+
+
+def test_render_timeline_sorts_chronologically():
+    """v3.1.1 fix: timeline mermaid must list pieces in chronological order."""
+    analyzed = {
+        "chunks": [
+            {"index": 0, "tipo_peca": "ACÓRDÃO", "primary_date": "18/03/2025"},
+            {"index": 1, "tipo_peca": "PETIÇÃO INICIAL", "primary_date": "10/01/2024"},
+            {"index": 2, "tipo_peca": "SENTENÇA", "primary_date": "12/12/2024"},
+        ]
+    }
+    timeline = render_timeline(analyzed)
+    assert "2024-01-10" in timeline
+    assert "2025-03-18" in timeline
+    # Order in the gantt block
+    assert timeline.index("2024-01-10") < timeline.index("2024-12-12") < timeline.index("2025-03-18")
+
+
 def test_render_pieces_table_has_all_rows():
     table = render_pieces_table(_sample_analyzed())
     assert "PETIÇÃO INICIAL" in table

@@ -97,6 +97,25 @@ def _pick_first(*values: Any) -> Any:
     return None
 
 
+def _date_sort_key(date_str: Any) -> str:
+    """Parse DD/MM/YYYY and return an ISO-sortable string. Missing or
+    unparseable dates sort last."""
+    if not date_str:
+        return "9999-99-99"
+    s = str(date_str).strip()
+    try:
+        parts = s.split("/")
+        if len(parts) == 3:
+            dd, mm, yyyy = parts
+            return f"{yyyy}-{mm.zfill(2)}-{dd.zfill(2)}"
+    except (AttributeError, ValueError):
+        pass
+    # Maybe already ISO
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return "9999-99-99"
+
+
 # ---------- section renderers ----------
 
 def render_header(analyzed: dict, risk: dict | None) -> str:
@@ -301,21 +320,37 @@ def render_alerts(analyzed: dict, prazos: dict | None, contradictions: dict | No
 
 
 def render_pieces_table(analyzed: dict) -> str:
-    """Tabela de peças processuais."""
+    """Tabela de peças processuais ordenada cronologicamente (v3.1.1 fix).
+
+    Chunks are sorted by primary_date ascending. When date is missing or
+    unparseable, entries fall to the end preserving their original index
+    as secondary sort key.
+    """
     chunks = analyzed.get("chunks") or []
     if not chunks:
         return ""
 
+    def sort_key(ch: dict) -> tuple:
+        date = ch.get("primary_date") or ch.get("data")
+        idx_raw = ch.get("index", 9999)
+        # Normalize index to int for secondary sort (suffixed keys become inf)
+        try:
+            idx_num = int(idx_raw)
+        except (TypeError, ValueError):
+            idx_num = 9999
+        return (_date_sort_key(date), idx_num)
+
+    sorted_chunks = sorted(chunks, key=sort_key)
+
     rows = ["## 📑 Peças do Processo\n"]
-    rows.append(f"**Total:** {len(chunks)} peça(s)\n")
+    rows.append(f"**Total:** {len(sorted_chunks)} peça(s) (ordenadas cronologicamente)\n")
     rows.append("| # | Peça | Data | Instância | Decisão/Resumo |")
     rows.append("|---|---|---|---|---|")
-    for ch in chunks:
+    for ch in sorted_chunks:
         idx = ch.get("index", "")
         tipo = ch.get("tipo_peca") or ch.get("label") or "(desconhecido)"
         data = ch.get("primary_date") or ch.get("data") or "—"
         instancia = ch.get("instancia") or "—"
-        # Prefer decisao, then resumo (truncated)
         summary = ch.get("decisao") or ch.get("resumo") or ""
         rows.append(
             f"| {idx} | {_escape_table_cell(tipo)} | {_escape_table_cell(data)} | "
@@ -488,28 +523,29 @@ def render_recommendations(recommendations: dict | None) -> str:
 
 
 def render_timeline(analyzed: dict) -> str:
-    """Cronograma Mermaid gantt (só se >= 3 peças com datas)."""
+    """Cronograma Mermaid gantt (só se >= 3 peças com datas).
+
+    Sorted chronologically by primary_date (v3.1.1 fix).
+    """
     chunks = analyzed.get("chunks") or []
-    dated = [(c.get("primary_date"), c.get("tipo_peca") or c.get("label")) for c in chunks]
+    dated = [
+        (c.get("primary_date"), c.get("tipo_peca") or c.get("label"))
+        for c in chunks
+    ]
     dated = [(d, t) for d, t in dated if d and t]
     if len(dated) < 3:
         return ""
 
-    # Convert DD/MM/YYYY to YYYY-MM-DD
-    def _to_iso(d: str) -> str | None:
-        try:
-            parts = d.split("/")
-            if len(parts) == 3:
-                dd, mm, yyyy = parts
-                return f"{yyyy}-{mm.zfill(2)}-{dd.zfill(2)}"
-        except (AttributeError, ValueError):
-            pass
-        return None
+    iso_dated: list[tuple[str, str]] = []
+    for d, t in dated:
+        iso = _date_sort_key(d)
+        if iso != "9999-99-99":
+            iso_dated.append((iso, t))
 
-    iso_dated = [(i, _to_iso(d), t) for i, (d, t) in enumerate(dated)]
-    iso_dated = [(i, d, t) for i, d, t in iso_dated if d]
     if len(iso_dated) < 3:
         return ""
+
+    iso_dated.sort(key=lambda x: x[0])
 
     lines = [
         "## 📅 Cronologia",
@@ -520,8 +556,7 @@ def render_timeline(analyzed: dict) -> str:
         "    dateFormat YYYY-MM-DD",
         "    axisFormat %d/%m/%y",
     ]
-    for i, d, t in iso_dated:
-        # Mermaid task: name :id, start, duration
+    for i, (d, t) in enumerate(iso_dated):
         safe_name = str(t).replace(":", " -").replace(",", " ")[:40]
         lines.append(f"    {safe_name} :p{i}, {d}, 1d")
     lines.append("```")
