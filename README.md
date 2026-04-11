@@ -30,14 +30,29 @@ O **JuriScan** faz isso em minutos. Você joga o PDF do processo e recebe:
 - **Nota de risco** do caso (processual, mérito e exposição monetária)
 - **Vault Obsidian** navegável com links entre peças, leis e jurisprudência
 
-### Para quem é?
+### Para quem é (e para quem não é)
 
-| Perfil | Como usa |
+**Sweet spot:**
+
+| Perfil | Ganho típico |
 |---|---|
-| **Advogado** | Análise rápida de processos grandes, preparação de peças, due diligence |
-| **Escritório** | Padronização de análise forense, onboarding de casos novos |
-| **Departamento jurídico** | Triagem de riscos, acompanhamento de prazos, auditoria processual |
-| **Estudante de Direito** | Estudo de casos reais com estrutura visual |
+| **Advogado solo / small-firm (contencioso cível ou trabalhista)** | Lê um processo de 100-200 páginas em 5-10 min; recebe alertas de art. 942 CPC, Lei 14.905/2024 e prazos urgentes; ganha 3-6 recomendações estratégicas por polo com citações verbatim |
+| **Associado de escritório médio** | Triagem de case intake: REPORT.md em 5 min substitui 30-60 min de leitura inicial |
+| **Estudante / pesquisador** | Estudo estruturado de processos reais, dataset anotado |
+
+**Fora do escopo:**
+
+- ❌ **Análise de contrato** (ferramenta diferente — juriscan foi desenhado para peças processuais, não cláusulas contratuais)
+- ❌ **Processo penal** (estrutura CPP e nulidades específicas não cobertas — foco é CPC cível/trabalhista)
+- ❌ **Consultivo (M&A, tributário, regulatório)** sem litígio ativo
+- ❌ **Advogado sênior de big-firm** que já tem paralegal/júnior para esse trabalho
+
+### Requisitos
+
+- **Claude Code** instalado ([claude.com/code](https://claude.com/code))
+- Plano **Claude Max** ou **API com billing** — a skill usa a sua sessão Claude Code, então o uso da LLM é cobrado via sua assinatura. Não há chave de API separada.
+- Python 3.10+
+- Linux, macOS ou WSL
 
 ---
 
@@ -54,13 +69,15 @@ O pipeline **legacy** é determinístico, rápido e tem cobertura de teste end-t
 
 O pipeline **agents** adiciona uma camada de raciocínio semântico via 8 subagents nativos do Claude Code (segmenter, parser, advogado-autor, advogado-reu, auditor-processual, verificador, sintetizador). A infraestrutura está completa, mas a validação end-to-end com PDFs reais ainda está em andamento — ver [issue de validação](https://github.com/brunobracaioli/juriscan/issues). O flip de default para `agents` está previsto para versão futura, após validação.
 
-Desde **v3.1.0-legacy / v3.1.1 / v3.1.2**, o pipeline legacy ganhou:
+Desde **v3.1.0-legacy** até **v3.1.4**, o pipeline legacy ganhou:
 
 - 📝 **Relatório executivo único** (`REPORT.md`) — markdown consolidado com caixas de alerta (Art. 942 CPC, Lei 14.905/2024, prazos urgentes), tabela cronológica de peças, contradições com citações verbatim, risk assessment e recomendações estratégicas por polo
 - 🧩 **Padrão per-chunk file** — Claude faz um `Write chunks/NN.analysis.json` por peça (sem helper scripts hardcoded), com schema strict e merge determinístico
 - ✂️ **Split-semantic com herança de data** — quando o chunker regex agrupa várias peças num arquivo físico, cada peça vira uma entrada separada em `analyzed.chunks[]` com seu próprio `primary_date`
 - 🎯 **Recomendações estratégicas por polo** (`recommendations.json`) — 3-5 ações por polo com `evidence_quote` verbatim obrigatória e fundamentação legal
 - 💰 **Recálculo Lei 14.905/2024 automático** — detecta condenações cruzando o marco de 30/08/2024
+- 🔁 **Merge idempotente** (v3.1.4) — retry loop do Step 4 funciona sem reset manual
+- 🎯 **Instância atual inferida** (v3.1.4) — header do relatório deduz a instância corrente da última peça cronológica
 
 Detalhes técnicos: [`docs/architecture.md`](docs/architecture.md) · contratos por subagent: [`docs/subagents.md`](docs/subagents.md)
 
@@ -248,14 +265,32 @@ processo-NNNNNNN/
 
 ## Limitações conhecidas
 
-Lista honesta para evitar surpresas:
+Lista honesta para evitar surpresas — use o tool sabendo o que ele **não** faz:
 
-- 🧪 **Pipeline `agents` ainda não foi validado end-to-end com PDFs reais.** A infraestrutura (8 subagents, schemas, audit trail, golden fixtures sintéticas) está completa e os testes Python passam, mas a validação iterativa com processos reais está em andamento. Use `--pipeline=legacy` (default) para cargas de produção.
-- 🔪 **Chunker regex (legacy) às vezes agrupa peças distintas** quando o layout do PDF é incomum. O `juriscan-segmenter` mitiga isso quando o pipeline `agents` é usado.
-- 🌐 **Verificação web é restrita** a fontes brasileiras autoritativas (STF, STJ, TJs, Planalto, LexML — ver [`references/whitelist_fontes.json`](references/whitelist_fontes.json)). Sites genéricos não são consultados.
+- 🧪 **Pipeline `agents` ainda não foi validado end-to-end com PDFs reais.** A infraestrutura (8 subagents, schemas, audit trail, golden fixtures sintéticas) está completa e os testes Python passam, mas a validação iterativa com processos reais ainda não aconteceu. Use `--pipeline=legacy` (default) para qualquer uso prático. Ver [issue Phase F](https://github.com/brunobracaioli/juriscan/issues).
+- 🔪 **Chunker regex (legacy) às vezes agrupa peças distintas** quando o layout do PDF é incomum. Mitigação atual: Claude detecta durante análise e usa o padrão split-semantic (`chunks/02a.analysis.json`, `02b`, `02c`). O `juriscan-segmenter` resolveria isso de forma mais limpa quando o pipeline agents for ativado.
+- ⚠️ **`contradiction_report.py` pode emitir falso positivo em split-semantic.** Quando múltiplas peças semânticas estão num mesmo arquivo físico, o detector pode atribuir um valor à peça errada. Workaround: tratar contradições `VALOR_INCONSISTENTE` entre peças decisórias (SENTENÇA/ACÓRDÃO) com ceticismo — verificar manualmente se é reforma parcial legítima antes de acionar recurso.
+- 🌐 **Zero verificação de jurisprudência** no pipeline legacy. Se o acórdão cita `REsp 1.234.567/SP`, o juriscan **não confere** se o precedente existe ou se foi corretamente aplicado. Revisão humana obrigatória em citações. (O pipeline agents tem `juriscan-verificador` para isso, mas ainda não foi validado.)
+- 📊 **Risk score é heurístico, não atuarial.** `BAIXO (8.8/10)` não significa 88% de chance de ganhar — é uma agregação de fatores estruturais. Não use como prognóstico.
+- ⏱️ **Prazos não são cientes de `process_state`.** O tool calcula prazos recursais mesmo em processo arquivado ou em cumprimento. Verifique o status real antes de agir em qualquer prazo sugerido.
+- 📂 **Sem integração com PJe / e-SAJ / e-proc.** Você precisa baixar o PDF manualmente. O tool lê arquivo local, não tribunal online.
 - 🤖 **Análise é assistida por IA** — sempre requer revisão profissional. Não substitui parecer jurídico nem produz peça vinculante.
-- 📷 **OCR depende da qualidade do PDF original.** Documentos escaneados antigos ou de baixa resolução podem ter recall baixo.
-- 🇧🇷 **Suporte a um único idioma:** Português brasileiro. CPC, prazos forenses e taxonomia de peças são específicos do ordenamento brasileiro.
+- 📷 **OCR depende da qualidade do PDF original.** Documentos escaneados antigos ou de baixa resolução podem ter recall baixo. Sem tesseract instalado, PDFs escaneados falham silenciosamente.
+- 🇧🇷 **Português brasileiro + CPC cível/trabalhista apenas.** Processo penal (CPP), tributário administrativo (CARF), arbitragem, e jurisdição não-brasileira não são cobertos.
+- 💰 **Requer assinatura Claude Max** ou billing de API ativo. O uso da LLM é cobrado via sua sessão Claude Code, não há chave separada.
+
+---
+
+## Feedback & contribuições
+
+O JuriScan está em **release público (v3.1.4)** e procura feedback de usuários reais:
+
+- 🐛 **Achou um bug ou um falso positivo?** Abra uma [issue](https://github.com/brunobracaioli/juriscan/issues/new) descrevendo o comportamento esperado × observado. Se possível, inclua um PDF anonimizado que reproduza o problema.
+- 💡 **Rodou em processo real e tem sugestão?** Use a [discussão de feedback v3.1.4](https://github.com/brunobracaioli/juriscan/issues) para contar o que funcionou, o que não funcionou, e o que faltou.
+- 🧪 **Quer ajudar a validar o pipeline `agents`?** O caminho é adicionar PDFs reais anonimizados em `tests/golden/` seguindo o checklist em [`docs/fixture_anonymization.md`](docs/fixture_anonymization.md) (quando disponível).
+- 🔀 **Pull requests** são bem-vindos — especialmente para novos tipos de peça, novos detectores de risco, fixtures de teste e correções no chunker regex.
+
+**LGPD:** qualquer PDF enviado em issues ou PRs **deve** estar anonimizado (partes, CPFs, CNJ, valores sensíveis). Não compartilhe dados reais em issues públicas.
 
 ---
 
@@ -267,12 +302,12 @@ python -m pytest tests/ -v
 ```
 
 ```
-============================= 435 passed in 7.81s ==============================
+============================= 443 passed in 7.35s ==============================
 ```
 
 ---
 
 <p align="center">
   Feito para advogados brasileiros que precisam de análise forense séria.<br/>
-  <sub>MIT License</sub>
+  <sub>MIT License · v3.1.4</sub>
 </p>
