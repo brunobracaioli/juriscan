@@ -41,6 +41,23 @@ O **JuriScan** faz isso em minutos. Você joga o PDF do processo e recebe:
 
 ---
 
+## Status & Pipelines
+
+O JuriScan tem **dois pipelines de análise** que coexistem durante a transição para a arquitetura híbrida:
+
+| Pipeline | Status | Quando usar | Como ativar |
+|---|---|---|---|
+| **Legacy** | ✅ Estável (default) | Uso em produção, validado em campo | `/juriscan <pdf>` ou `/juriscan --pipeline=legacy <pdf>` |
+| **Agents** | 🧪 Beta (opt-in) | Casos que precisam de detecção semântica avançada (art. 942 CPC, dialética adversarial autor × réu × auditor, verificação web de jurisprudência) | `/juriscan --pipeline=agents <pdf>` |
+
+O pipeline **legacy** é determinístico, rápido e tem cobertura de teste end-to-end com PDFs reais. É o caminho recomendado para a maioria dos casos.
+
+O pipeline **agents** adiciona uma camada de raciocínio semântico via 8 subagents nativos do Claude Code (segmenter, parser, advogado-autor, advogado-reu, auditor-processual, verificador, sintetizador). A infraestrutura está completa, mas a validação end-to-end com PDFs reais ainda está em andamento — ver [issue de validação](https://github.com/brunobracaioli/juriscan/issues). O flip de default para `agents` está previsto para `v3.1.0`.
+
+Detalhes técnicos: [`docs/architecture.md`](docs/architecture.md) · contratos por subagent: [`docs/subagents.md`](docs/subagents.md)
+
+---
+
 ## Instalação
 
 ### Clone e instale (uma vez)
@@ -202,6 +219,19 @@ processo-NNNNNNN/
 
 ---
 
+## Limitações conhecidas
+
+Lista honesta para evitar surpresas:
+
+- 🧪 **Pipeline `agents` ainda não foi validado end-to-end com PDFs reais.** A infraestrutura (8 subagents, schemas, audit trail, golden fixtures sintéticas) está completa e os testes Python passam, mas a validação iterativa com processos reais está em andamento. Use `--pipeline=legacy` (default) para cargas de produção.
+- 🔪 **Chunker regex (legacy) às vezes agrupa peças distintas** quando o layout do PDF é incomum. O `juriscan-segmenter` mitiga isso quando o pipeline `agents` é usado.
+- 🌐 **Verificação web é restrita** a fontes brasileiras autoritativas (STF, STJ, TJs, Planalto, LexML — ver [`references/whitelist_fontes.json`](references/whitelist_fontes.json)). Sites genéricos não são consultados.
+- 🤖 **Análise é assistida por IA** — sempre requer revisão profissional. Não substitui parecer jurídico nem produz peça vinculante.
+- 📷 **OCR depende da qualidade do PDF original.** Documentos escaneados antigos ou de baixa resolução podem ter recall baixo.
+- 🇧🇷 **Suporte a um único idioma:** Português brasileiro. CPC, prazos forenses e taxonomia de peças são específicos do ordenamento brasileiro.
+
+---
+
 ## Testes
 
 ```bash
@@ -210,7 +240,7 @@ python -m pytest tests/ -v
 ```
 
 ```
-============================= 146 passed in 0.58s ==============================
+============================= 302 passed in 5.33s ==============================
 ```
 
 ---
