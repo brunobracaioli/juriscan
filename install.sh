@@ -59,6 +59,26 @@ else
     echo "[OK] Installed as symlink: $SKILL_TARGET -> $SCRIPT_DIR"
 fi
 
+# 4b. Expose juriscan subagents to Claude Code
+#     Subagents live inside the repo at .claude/agents/ so they're versioned
+#     alongside the code, but Claude Code discovers agents at ~/.claude/agents/.
+#     We symlink each juriscan-*.md file there.
+AGENTS_SRC="$SCRIPT_DIR/.claude/agents"
+AGENTS_DST="$HOME/.claude/agents"
+if [ -d "$AGENTS_SRC" ]; then
+    mkdir -p "$AGENTS_DST"
+    agent_count=0
+    for agent_file in "$AGENTS_SRC"/juriscan-*.md; do
+        [ -e "$agent_file" ] || continue
+        agent_name="$(basename "$agent_file")"
+        ln -sf "$agent_file" "$AGENTS_DST/$agent_name"
+        agent_count=$((agent_count + 1))
+    done
+    if [ $agent_count -gt 0 ]; then
+        echo "[OK] Linked $agent_count juriscan subagent(s) into $AGENTS_DST"
+    fi
+fi
+
 # 5. Summary
 echo ""
 echo "=== Installation Complete ==="

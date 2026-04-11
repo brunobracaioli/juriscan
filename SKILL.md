@@ -1,7 +1,7 @@
 ---
 name: juriscan
 description: "Análise forense de processos judiciais brasileiros. Extrai, classifica e cruza peças processuais, detecta contradições, calcula prazos CPC e gera relatórios de risco com exportação para Obsidian. Use quando mencionar: processo judicial, petição, sentença, acórdão, contradições, prazos, timeline, análise forense, Obsidian."
-allowed-tools: Read Bash(python3 *) Bash(pip install *) Bash(pdftotext *) Bash(pdfinfo *) Glob Grep
+allowed-tools: Read Bash(python3 *) Bash(pip install *) Bash(pdftotext *) Bash(pdfinfo *) Glob Grep Task
 ---
 
 # JuriScan
@@ -22,8 +22,9 @@ Prossiga apenas se o usuário insistir ou fornecer caminho absoluto.
 
 1. Resolver `SKILL_DIR` e garantir dependências (Setup)
 2. Criar diretório de análise ao lado do PDF: `<pdf_dir>/juriscan-output/`
-3. Executar Steps 1-10 em sequência
-4. No final, informar ao usuário:
+3. Resolver o **modo de execução** (ver "Modos de execução" abaixo)
+4. Executar o pipeline correspondente ao modo escolhido
+5. No final, informar ao usuário:
    - Resumo executivo do processo (3-5 frases)
    - Quantas peças encontradas
    - Contradições detectadas (quantidade e as mais graves)
@@ -31,6 +32,146 @@ Prossiga apenas se o usuário insistir ou fornecer caminho absoluto.
    - Nível de risco
    - Onde estão os arquivos de saída
    - Se quiser Obsidian: "O vault está em `<output>/obsidian/` — abra essa pasta no Obsidian como vault"
+   - run_id do audit trail (`.juriscan/audit/<run_id>.jsonl`) quando em modo agents
+
+---
+
+## Modos de execução
+
+O juriscan suporta dois pipelines. O modo é resolvido a partir dos argumentos:
+
+| Invocação | Modo | Status |
+|---|---|---|
+| `/juriscan --selftest` | Selftest | Ativo (ver seção Selftest) |
+| `/juriscan --pipeline=legacy <pdf>` | **Legacy** (default até Phase 6) | Ativo — pipeline determinístico descrito em "Step-by-Step Pipeline" |
+| `/juriscan --pipeline=agents <pdf>` | **Agents** (opt-in durante Phases 2–5) | Em construção — ver "Agents Pipeline" |
+| `/juriscan <pdf>` (sem flag) | Legacy (por enquanto) | Flip do default acontece na Phase 6 Step 6.4 |
+
+**Parsing dos argumentos:** quando o usuário invocar `/juriscan`, o primeiro token não-flag é o caminho do PDF. Flags reconhecidas: `--selftest`, `--pipeline=legacy`, `--pipeline=agents`. Qualquer flag desconhecida → avisar e cair em legacy.
+
+**Gate de pré-requisitos (modo agents):** antes de seguir o modo agents, confirme que:
+
+1. O arquivo `.claude/agents/juriscan-echo.md` existe em `$SKILL_DIR/.claude/agents/` (proxy para "subagents foram instalados").
+2. `python3 "$SKILL_DIR/scripts/agent_io.py" validate --agent echo --input "$SKILL_DIR/tests/fixtures/agent_io/echo_valid.json"` retorna exit 0 (proxy para "schemas + jsonschema ok").
+
+Se algum check falhar, **não** prossiga em modo agents. Informe o usuário o check que falhou e sugira `./install.sh` + `/juriscan --selftest`.
+
+**Manifesto (ambos os modos):** no início de qualquer análise (não-selftest), crie/atualize `<output>/manifest.json`:
+
+```bash
+RUN_ID="$(python3 "$SKILL_DIR/scripts/agent_io.py" new-run --root "$OUTPUT_DIR/.juriscan/audit")"
+python3 -c "
+import json, os, time
+manifest = {
+    'run_id': '$RUN_ID',
+    'pipeline_mode': '$PIPELINE_MODE',  # 'legacy' | 'agents'
+    'pdf_path': os.path.abspath('$PDF_PATH'),
+    'started_at': time.time(),
+    'skill_dir': '$SKILL_DIR',
+}
+open('$OUTPUT_DIR/manifest.json','w').write(json.dumps(manifest, indent=2))
+"
+```
+
+Nota: por ora `.juriscan/audit/` vive dentro de `<output>/` (não na raiz do projeto) para evitar poluir o cwd do usuário. Depois do Phase 6 podemos discutir se faz sentido centralizar.
+
+---
+
+## Agents Pipeline (modo `--pipeline=agents`)
+
+Sequência quando o modo agents está selecionado. Cada passo é `[Python]` (script determinístico) ou `[Task]` (invocação de subagent via Task tool). Passos marcados `[PENDING: Phase N]` ainda não têm subagent real e abortam a pipeline com mensagem clara até serem implementados.
+
+```
+1. [Python]  scripts/extract_pdf.py              -> raw_text.txt + page_map.json
+                                                    (Phase 2.x, stub usa extract_and_chunk.py)
+2. [Task]    juriscan-segmenter                  -> /tmp/$RUN_ID-segmenter.json
+3. [Python]  scripts/agent_io.py validate --agent segmenter ...
+4. [Python]  scripts/persist_chunks.py           -> chunks/*.txt + index.json
+5. [Task×N]  juriscan-parser (paralelo)          -> /tmp/$RUN_ID-parser-NN.json por chunk
+6. [Python]  scripts/agent_io.py validate (N×)
+7. [Python]  scripts/enrich_deterministic.py     -> pieces enriquecidas (normalizações)
+8. [Task×3]  juriscan-advogado-autor, juriscan-advogado-reu, juriscan-auditor-processual (paralelo)
+             [PENDING: Phase 3]
+9. [Task]    juriscan-verificador                 [PENDING: Phase 4]
+10.[Task]    juriscan-sintetizador                [PENDING: Phase 3]
+11.[Python]  scripts/confidence_rules.py          [PENDING: Phase 3/4]
+12.[Python]  scripts/finalize.py                  [PENDING: Phase 5]
+13.[Python]  scripts/obsidian_export.py           (esquema v2 até Phase 6)
+```
+
+Regra geral para cada `[Task]`:
+
+1. Defina um output path em `/tmp/juriscan-${RUN_ID}-<role>[-<idx>].json` e instrua o subagent a escrever nele.
+2. Invoque via Task tool: `Task(subagent_type="juriscan-<role>", prompt="...")`.
+3. Rode `python3 "$SKILL_DIR/scripts/agent_io.py" validate --agent <role> --input <path>`.
+   - Exit 0 → passo 4.
+   - Exit ≠ 0 → re-invocar o subagent **uma vez** passando o stderr do validate como feedback. Segunda falha → abortar pipeline e reportar `run_id`.
+4. Rode `agent_io.py log --run-id $RUN_ID --agent <role> --input <path> --schema-valid true [--latency-ms N]`.
+5. Consuma o arquivo validado no próximo passo Python.
+
+**Invocações paralelas (passos 5 e 8):** emita todas as chamadas Task na **mesma mensagem** ao modelo. Não serialize — Claude Code executa-as em paralelo quando estão na mesma resposta do assistant.
+
+---
+
+## Selftest (`/juriscan --selftest`)
+
+Quando o usuário invocar `/juriscan --selftest`, **não** rode o pipeline de análise. Em vez disso, execute o selftest abaixo para verificar que o contrato com subagents está funcionando. Esse é o único diagnóstico que prova, end-to-end, que a máquina de subagents + validação + audit trail está saudável antes de qualquer análise real.
+
+1. **Gerar run_id e abrir audit trail:**
+   ```bash
+   RUN_ID="$(python3 "$SKILL_DIR/scripts/agent_io.py" new-run)"
+   echo "selftest run_id=$RUN_ID"
+   ```
+2. **Invocar o subagent echo via Task tool** com `subagent_type="juriscan-echo"`. Instrua o echo a escrever em `/tmp/juriscan_selftest_${RUN_ID}.json` com `input_echo="selftest ping"`.
+3. **Validar o JSON retornado:**
+   ```bash
+   python3 "$SKILL_DIR/scripts/agent_io.py" validate \
+     --agent echo --input "/tmp/juriscan_selftest_${RUN_ID}.json"
+   ```
+4. **Registrar no audit trail:**
+   ```bash
+   python3 "$SKILL_DIR/scripts/agent_io.py" log \
+     --run-id "$RUN_ID" --agent echo \
+     --input "/tmp/juriscan_selftest_${RUN_ID}.json" \
+     --schema-valid true --model-hint haiku
+   ```
+5. **Reportar ao usuário:**
+   - Sucesso: `"Selftest OK — subagent echo respondeu e foi validado. run_id=$RUN_ID"`
+   - Falha (validate retornou ≠ 0 ou arquivo ausente): mostre a mensagem do validator e o `run_id` para inspeção do audit trail.
+
+Se o subagent `juriscan-echo` não estiver registrado (Task tool retornar erro de `subagent_type` desconhecido), oriente o usuário a rodar `./install.sh` novamente — o instalador é responsável por expor `.claude/agents/juriscan-*.md` ao Claude Code.
+
+---
+
+## Contract com subagents
+
+A partir do Phase 2 do plano de migração (flag `--pipeline=agents`), o `juriscan` passa a delegar raciocínio semântico para subagents nativos do Claude Code, definidos em `.claude/agents/juriscan-*.md` dentro do repositório. O contrato entre este SKILL.md (orquestrador) e cada subagent é rígido e determinístico:
+
+| Item | Onde mora | Papel |
+|---|---|---|
+| System prompt do subagent | `.claude/agents/juriscan-<role>.md` (frontmatter + corpo) | Define persona, ferramentas permitidas, modelo sugerido |
+| Schema do output JSON | `references/agent_schemas/<role>_output.json` | Contrato de forma do output |
+| Validador e logger | `scripts/agent_io.py` | CLI: `validate`, `log`, `new-run`, `extract-field` |
+| Audit trail append-only | `.juriscan/audit/{run_id}.jsonl` | Uma linha por invocação Task |
+
+**Fluxo obrigatório por invocação** (modo `--pipeline=agents`):
+
+1. SKILL.md emite uma chamada `Task(subagent_type="juriscan-<role>", prompt=..., ...)`.
+2. O subagent escreve seu resultado num arquivo JSON em caminho que o orquestrador escolheu.
+3. SKILL.md roda `python3 $SKILL_DIR/scripts/agent_io.py validate --agent <role> --input <path>`.
+   - Exit 0 → prosseguir.
+   - Exit ≠ 0 → re-invocar o subagent **uma vez** com a mensagem de erro como feedback. Segundo erro → abortar o pipeline e reportar falha ao usuário com o `run_id`.
+4. SKILL.md roda `agent_io.py log ...` para gravar a invocação (timestamp, schema_valid, input_hash, latency_ms quando aplicável).
+5. Só depois de `schema_valid=true` o output é consumido por Python determinístico (enrich, persist_chunks, finalize).
+
+**Invariantes não-negociáveis:**
+
+- Nenhum subagent escreve direto em `analyzed.json`. Toda escrita canônica passa por scripts Python.
+- Nenhum subagent consulta a web fora da whitelist (`references/whitelist_fontes.json`, Phase 4). O verificador é o único com `WebFetch` nas `tools:`.
+- Nenhum Task call fica sem linha no audit trail. Se o subagent falhou, loga com `error=<msg>` e `schema_valid=false`.
+- Paralelismo: quando houver múltiplas invocações independentes (parser por chunk, advogado-autor + advogado-réu + auditor), SKILL.md emite as chamadas Task **na mesma mensagem** para aproveitar a execução paralela nativa do Claude Code.
+
+Phase 0 Step 0.4 introduz apenas o subagent `juriscan-echo` (selftest) e o esqueleto dos schemas. Os subagents reais (`segmenter`, `parser`, `advogado-autor`, `advogado-reu`, `auditor-processual`, `verificador`, `sintetizador`) entram nas Phases 2–4 do plano e cada um é um PR próprio.
 
 ---
 
@@ -88,7 +229,7 @@ Se falhar, corrigir o JSON e re-validar. Repetir até válido.
 
 **5a. Contradições:**
 ```bash
-python3 $SKILL_DIR/scripts/contradiction_report.py --analysis <output_dir>/analyzed.json --output <output_dir>/contradictions.json
+python3 $SKILL_DIR/scripts/legacy/contradiction_report.py --analysis <output_dir>/analyzed.json --output <output_dir>/contradictions.json
 ```
 Complementar com prompt **Detecção de Contradições** de [prompt_templates.md](references/prompt_templates.md#2-detecção-de-contradições) para análise semântica.
 
@@ -112,7 +253,7 @@ Python puro (CPC Art. 219-232). Dados: [cpc_prazos.json](references/cpc_prazos.j
 ### Step 7: Risk Scoring
 
 ```bash
-python3 $SKILL_DIR/scripts/risk_scorer.py --analysis <output_dir>/analyzed.json --output <output_dir>/risk.json
+python3 $SKILL_DIR/scripts/legacy/risk_scorer.py --analysis <output_dir>/analyzed.json --output <output_dir>/risk.json
 ```
 
 Complementar com prompt **Avaliação de Risco** de [prompt_templates.md](references/prompt_templates.md#6-avaliação-de-risco-litigioso). Rubrica: [risk_scoring_rubric.md](references/risk_scoring_rubric.md).
