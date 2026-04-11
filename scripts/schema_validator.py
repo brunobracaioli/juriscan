@@ -21,9 +21,10 @@ except ImportError:
     ValidationError = None  # type: ignore[assignment, misc]
 
 
-SCHEMA_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'references', 'output_schema.json'
-)
+_REFS_DIR = os.path.join(os.path.dirname(__file__), '..', 'references')
+SCHEMA_PATH = os.path.join(_REFS_DIR, 'output_schema.json')
+SCHEMA_PATH_V2 = os.path.join(_REFS_DIR, 'output_schema_v2.json')
+SCHEMA_PATH_V3 = os.path.join(_REFS_DIR, 'output_schema_v3.json')
 
 
 def load_schema(schema_path: str | None = None) -> dict:
@@ -31,6 +32,18 @@ def load_schema(schema_path: str | None = None) -> dict:
     path = schema_path or SCHEMA_PATH
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+def pick_schema_for(data: dict) -> str:
+    """Phase 6 Step 6.1 — dispatch schema by `schema_version` field.
+
+    - schema_version == "3.0" → output_schema_v3.json
+    - schema_version == "2.0" or absent → output_schema_v2.json (legacy)
+    """
+    version = data.get("schema_version") or data.get("analysis_version")
+    if version == "3.0":
+        return SCHEMA_PATH_V3
+    return SCHEMA_PATH_V2
 
 
 def validate_analysis(data: dict, schema: dict | None = None) -> tuple[bool, list[str]]:
@@ -113,24 +126,38 @@ def main():
     parser = argparse.ArgumentParser(description='Validate analysis JSON against schema')
     parser.add_argument('--input', '-i', required=True, help='Path to analyzed.json')
     parser.add_argument('--schema', '-s', help='Path to schema (default: references/output_schema.json)')
+    parser.add_argument('--skip-integrity', action='store_true',
+                        help='Skip the chunk-file integrity gate (not recommended)')
     args = parser.parse_args()
 
     with open(args.input, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    schema = load_schema(args.schema) if args.schema else None
+    if args.schema:
+        schema = load_schema(args.schema)
+    else:
+        schema = load_schema(pick_schema_for(data))
     valid, errors = validate_analysis(data, schema)
 
-    if valid:
-        print(f"OK: {args.input} is valid against schema")
-        sys.exit(0)
-    else:
+    if not valid:
         print(f"INVALID: {len(errors)} error(s) in {args.input}")
         for err in errors[:20]:
             print(f"  - {err}")
         if len(errors) > 20:
             print(f"  ... and {len(errors) - 20} more")
         sys.exit(1)
+
+    if not args.skip_integrity:
+        # Phase 1 Step 1.2: chunk integrity gate
+        from integrity_gate import assert_chunks_consistent, ChunkIntegrityError
+        try:
+            assert_chunks_consistent(__import__('pathlib').Path(args.input))
+        except ChunkIntegrityError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    print(f"OK: {args.input} is valid against schema")
+    sys.exit(0)
 
 
 if __name__ == '__main__':
