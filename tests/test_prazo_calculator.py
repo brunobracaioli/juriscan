@@ -193,3 +193,82 @@ class TestCheckPrazoStatus:
         assert result is not None
         assert result['status'] == 'vencido'
         assert result['dias_restantes'] is None
+
+
+class TestProcessStateAware:
+    """Phase 5 Step 5.2 — state-aware prazo calculation."""
+
+    def test_ativo_behaves_as_before(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+            process_state='ativo',
+        )
+        assert result is not None
+        assert result['status'] == 'em_prazo'
+        assert result['process_state'] == 'ativo'
+
+    def test_transito_em_julgado_switches_to_cpc_523(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='apelação',  # ignored
+            current_date=date(2025, 3, 20),
+            process_state='transito_em_julgado',
+        )
+        assert result is not None
+        assert result['tipo'] == 'cumprimento voluntário'
+        assert 'CPC art. 523' in result['fundamento_legal']
+        assert result['dias'] == 15
+        assert 'note' in result
+        assert 'apelação' in result['note']
+
+    def test_suspenso_returns_suspended_status(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+            process_state='suspenso',
+        )
+        assert result is not None
+        assert result['status'] == 'suspenso'
+        assert 'suspenso' in result['fundamento_legal'].lower()
+
+    def test_arquivado_returns_none(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+            process_state='arquivado',
+        )
+        assert result is None
+
+    def test_desconhecido_falls_through_to_normal(self):
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+            process_state='desconhecido',
+        )
+        assert result is not None
+        assert result['status'] == 'em_prazo'
+
+    def test_invalid_state_raises(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            check_prazo_status(
+                intimation_date=date(2025, 3, 17),
+                prazo_type='contestação',
+                current_date=date(2025, 3, 20),
+                process_state='juridiquês',
+            )
+
+    def test_backwards_compat_no_process_state(self):
+        """Calling without process_state must behave identically to before."""
+        result = check_prazo_status(
+            intimation_date=date(2025, 3, 17),
+            prazo_type='contestação',
+            current_date=date(2025, 3, 20),
+        )
+        assert result is not None
+        assert 'process_state' not in result  # not added when param omitted

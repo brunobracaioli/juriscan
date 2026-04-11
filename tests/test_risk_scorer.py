@@ -5,13 +5,69 @@ import os
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
-from risk_scorer import (
-    score_procedural_risk,
-    score_merit_indicators,
-    score_monetary_exposure,
-    generate_risk_report,
-)
+import warnings as _warnings
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'legacy'))
+with _warnings.catch_warnings():
+    _warnings.simplefilter("ignore", DeprecationWarning)
+    from risk_scorer import (  # noqa: E402
+        score_procedural_risk,
+        score_merit_indicators,
+        score_monetary_exposure,
+        generate_risk_report,
+    )
+
+
+def _brl_to_float(s: str | None) -> float:
+    if s is None:
+        return 0.0
+    return float(s.replace('R$', '').strip().replace('.', '').replace(',', '.'))
+
+
+class TestLikelyRangeInvariant:
+    """Regression for Phase 1 Step 1.1 — min <= max invariant."""
+
+    def test_outros_larger_than_condenacao_is_clamped(self):
+        """Reproduces the field bug: outros (R$485k) > condenação (R$453k).
+
+        Before the fix, likely_range.min was the 'outros' value and
+        likely_range.max was the condenação — producing min > max.
+        """
+        analysis = {
+            'chunks': [
+                {
+                    'label': 'PETIÇÃO INICIAL',
+                    'valores': {
+                        'causa': 'R$ 500.000,00',
+                        'outros': [{'valor': 'R$ 485.000,00', 'descricao': 'pedidos'}],
+                    },
+                },
+                {
+                    'label': 'SENTENÇA',
+                    'valores': {'condenacao': 'R$ 453.300,00'},
+                },
+            ],
+        }
+        result = score_monetary_exposure(analysis)
+        rng = result['likely_range']
+        assert rng['min'] is not None and rng['max'] is not None
+        mn = _brl_to_float(rng['min'])
+        mx = _brl_to_float(rng['max'])
+        assert mn <= mx, f"invariant violated: min={mn} max={mx}"
+
+    def test_happy_path_min_below_max(self):
+        analysis = {
+            'chunks': [
+                {
+                    'label': 'SENTENÇA',
+                    'valores': {'condenacao': 'R$ 100.000,00'},
+                },
+            ],
+        }
+        result = score_monetary_exposure(analysis)
+        mn = _brl_to_float(result['likely_range']['min'])
+        mx = _brl_to_float(result['likely_range']['max'])
+        assert mn <= mx
 
 
 class TestProceduralRisk:

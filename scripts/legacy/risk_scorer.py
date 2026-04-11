@@ -2,6 +2,11 @@
 """
 risk_scorer.py — Litigation risk scoring.
 
+DEPRECATED (Phase 5 Step 5.1, 2026-04-11): moved to scripts/legacy/. Still
+consumed by SKILL.md when `--pipeline=legacy` is explicit. The agents
+pipeline uses juriscan-advogado-autor + juriscan-advogado-reu (two-polo
+perspectives) instead. Removal scheduled 3 releases after Phase 6.4 flip.
+
 Computes structural risk indicators from the analysis JSON.
 Strategic analysis (Claude-dependent) is handled via prompt templates.
 
@@ -16,8 +21,19 @@ import json
 import os
 import re
 import sys
+import warnings as _warnings
+
+_warnings.warn(
+    "scripts.legacy.risk_scorer is deprecated; prefer perspectives.autor / "
+    "perspectives.reu from the agents pipeline.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 sys.path.insert(0, os.path.dirname(__file__))
+# risk_scorer previously imported from scripts/utils — after the move to
+# scripts/legacy/, point to the parent scripts/ so utils.monetary still works.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.monetary import normalize_brl
 
 
@@ -205,6 +221,15 @@ def score_monetary_exposure(analysis: dict) -> dict:
     honorarios = likely_value * 0.15 if likely_value else max_exposure * 0.10
     custas = max_exposure * 0.01 if max_exposure else 0.0
 
+    # Ensure invariant: likely_range.min <= likely_range.max.
+    # Previously min_value could exceed likely_value when "outros" valores
+    # (e.g. aggregated pedidos) were larger than the actual condenação,
+    # producing a nonsense range with min > max.
+    range_min, range_max = sorted([min_value, likely_value])
+    assert range_min <= range_max, (
+        f"likely_range invariant violated: min={range_min}, max={range_max}"
+    )
+
     def fmt(v: float) -> str | None:
         if v <= 0:
             return None
@@ -213,8 +238,8 @@ def score_monetary_exposure(analysis: dict) -> dict:
     return {
         'max_exposure': fmt(max_exposure),
         'likely_range': {
-            'min': fmt(min_value),
-            'max': fmt(likely_value),
+            'min': fmt(range_min),
+            'max': fmt(range_max),
         },
         'costs': {
             'custas_estimadas': fmt(custas),

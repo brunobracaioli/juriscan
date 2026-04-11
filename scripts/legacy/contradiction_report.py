@@ -2,6 +2,11 @@
 """
 contradiction_report.py — Gera relatório de contradições entre peças processuais.
 
+DEPRECATED (Phase 5 Step 5.1, 2026-04-11): moved to scripts/legacy/. Still
+consumed by SKILL.md when `--pipeline=legacy` is explicit. The agents
+pipeline uses juriscan-auditor-processual + juriscan-advogados instead.
+Removal scheduled 3 releases after the Phase 6.4 default flip.
+
 Compara as análises de todas as peças e identifica:
 - Fatos divergentes (mesmo fato narrado diferentemente)
 - Valores inconsistentes (números que mudam entre peças)
@@ -12,6 +17,14 @@ Compara as análises de todas as peças e identifica:
 Usage:
     python3 contradiction_report.py --analysis ./analysis/analyzed.json --output ./analysis/contradictions.json
 """
+
+import warnings as _warnings
+
+_warnings.warn(
+    "scripts.legacy.contradiction_report is deprecated; prefer the agents pipeline.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import argparse
 import json
@@ -44,17 +57,46 @@ def normalize_value(val_str: str) -> float | None:
         return None
 
 
-def find_value_inconsistencies(chunks: list) -> list:
-    """Find monetary values that differ across chunks for the same concept."""
-    contradictions = []
-    
+# Phase 1 Step 1.3 — hierarchy awareness.
+# Pieces organized by their position in the appellate chain. When the SAME
+# monetary concept is valued differently across pieces that straddle these
+# tiers, that is almost always a legitimate appellate reform, not a
+# contradiction. We emit an INSTANCE_TRACKING note instead of a VALOR_INCONSISTENTE
+# flag. True contradictions (e.g. sentença vs. sentença disagreeing) remain flagged.
+
+_LOWER_INSTANCE_PIECES = {"SENTENÇA", "SENTENCA"}
+_APPELLATE_PIECES = {
+    "ACÓRDÃO",
+    "ACORDAO",
+    "DECISÃO MONOCRÁTICA",
+    "DECISAO MONOCRATICA",
+}
+
+
+def _is_legitimate_reform(labels: list[str]) -> bool:
+    """True when the set of labels spans the hierarchy (lower + appellate)."""
+    normalized = {(l or "").upper() for l in labels}
+    has_lower = bool(normalized & _LOWER_INSTANCE_PIECES)
+    has_appellate = bool(normalized & _APPELLATE_PIECES)
+    return has_lower and has_appellate
+
+
+def find_value_inconsistencies(chunks: list) -> tuple[list, list]:
+    """Find monetary contradictions. Returns (contradictions, instance_notes).
+
+    instance_notes contains informational entries for legitimate appellate
+    reforms (hierarchical value changes that are NOT contradictions).
+    """
+    contradictions: list = []
+    instance_notes: list = []
+
     # Compare valor_causa across chunks
     causas = []
     for c in chunks:
         v = c.get('valores', {}).get('causa')
         if v:
             causas.append((c.get('label', '?'), v))
-    
+
     if len(causas) > 1:
         normalized = [(label, val, normalize_value(val)) for label, val in causas]
         unique_vals = set(n for _, _, n in normalized if n is not None)
@@ -66,27 +108,46 @@ def find_value_inconsistencies(chunks: list) -> list:
                 'descricao': f"Valor da causa diverge entre peças: {', '.join(f'{label}: {val}' for label, val, _ in normalized)}",
                 'sugestao': 'Verificar se houve emenda à inicial alterando o valor da causa, ou se alguma peça cita valor incorreto.',
             })
-    
-    # Compare condenação across chunks
+
+    # Compare condenação across chunks — hierarchy-aware
     condenacoes = []
     for c in chunks:
         v = c.get('valores', {}).get('condenacao')
         if v:
             condenacoes.append((c.get('label', '?'), v))
-    
+
     if len(condenacoes) > 1:
         normalized = [(label, val, normalize_value(val)) for label, val in condenacoes]
         unique_vals = set(n for _, _, n in normalized if n is not None)
         if len(unique_vals) > 1:
-            contradictions.append({
-                'tipo': 'VALOR_INCONSISTENTE',
-                'impacto': 'ALTO',
-                'pecas': [label for label, _, _ in normalized],
-                'descricao': f"Valor de condenação diverge: {', '.join(f'{label}: {val}' for label, val, _ in normalized)}",
-                'sugestao': 'Verificar embargos de declaração sobre erro material, ou se houve reforma parcial em instância superior.',
-            })
-    
-    return contradictions
+            labels_involved = [label for label, _, _ in normalized]
+            if _is_legitimate_reform(labels_involved):
+                # Appellate reform of a lower-court condenação. Not a contradiction.
+                instance_notes.append({
+                    'tipo': 'REFORMA_PARCIAL',
+                    'impacto': 'INFO',
+                    'pecas': labels_involved,
+                    'descricao': (
+                        "Valor de condenação alterado em grau recursal (reforma "
+                        "legítima): "
+                        + ', '.join(f'{label}: {val}' for label, val, _ in normalized)
+                    ),
+                    'sugestao': (
+                        'Reforma de sentença por instância superior é comportamento '
+                        'esperado do sistema recursal — não é contradição. Verificar '
+                        'base de cálculo de honorários e juros sobre a nova base.'
+                    ),
+                })
+            else:
+                contradictions.append({
+                    'tipo': 'VALOR_INCONSISTENTE',
+                    'impacto': 'ALTO',
+                    'pecas': labels_involved,
+                    'descricao': f"Valor de condenação diverge: {', '.join(f'{label}: {val}' for label, val, _ in normalized)}",
+                    'sugestao': 'Verificar embargos de declaração sobre erro material, ou se houve reforma parcial em instância superior.',
+                })
+
+    return contradictions, instance_notes
 
 
 def find_date_conflicts(chunks: list) -> list:
@@ -199,17 +260,18 @@ def find_jurisprudence_conflicts(chunks: list) -> list:
 def generate_report(analysis: dict) -> dict:
     """Generate full contradiction report."""
     chunks = analysis.get('chunks', [])
-    
+
     all_contradictions = []
-    all_contradictions.extend(find_value_inconsistencies(chunks))
+    value_contradictions, instance_notes = find_value_inconsistencies(chunks)
+    all_contradictions.extend(value_contradictions)
     all_contradictions.extend(find_date_conflicts(chunks))
     all_contradictions.extend(find_fact_divergences(chunks))
     all_contradictions.extend(find_jurisprudence_conflicts(chunks))
-    
+
     # Sort by impact
     impact_order = {'ALTO': 0, 'MÉDIO': 1, 'BAIXO': 2}
     all_contradictions.sort(key=lambda x: impact_order.get(x.get('impacto', 'BAIXO'), 3))
-    
+
     return {
         'total': len(all_contradictions),
         'by_type': {
@@ -221,6 +283,7 @@ def generate_report(analysis: dict) -> dict:
             for i in ['ALTO', 'MÉDIO', 'BAIXO']
         },
         'contradictions': all_contradictions,
+        'instance_tracking': instance_notes,
     }
 
 

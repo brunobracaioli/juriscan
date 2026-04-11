@@ -187,18 +187,98 @@ def get_standard_prazo(tipo: str) -> dict | None:
     return None
 
 
+VALID_PROCESS_STATES = {
+    "ativo",
+    "transito_em_julgado",
+    "suspenso",
+    "arquivado",
+    "desconhecido",
+}
+
+# Phase 5 Step 5.2 — state-aware behaviour
+# When the process has already transited in rem judicatam, recursal deadlines
+# are meaningless; only the voluntary compliance deadline (CPC art. 523) is
+# relevant. When the process is suspended, all deadlines are frozen. When it
+# is archived, nothing is computed.
+
+_CUMPRIMENTO_VOLUNTARIO = {
+    "dias": 15,
+    "unidade": "dias úteis",
+    "fundamento": "CPC art. 523 — cumprimento voluntário da sentença",
+    "tipo": "cumprimento voluntário",
+}
+
+
 def check_prazo_status(
     intimation_date: date,
     prazo_type: str,
     current_date: date | None = None,
     state: str | None = None,
+    process_state: str | None = None,
 ) -> dict | None:
     """Check the status of a procedural deadline.
 
     Returns dict with deadline, days_remaining, and status.
+
+    Phase 5 Step 5.2: when ``process_state`` is provided, recursal deadlines
+    are computed only when the process is 'ativo' or 'desconhecido'. For
+    'transito_em_julgado', only the voluntary compliance deadline (CPC
+    art. 523) is computed regardless of ``prazo_type``. For 'suspenso' all
+    deadlines are marked suspended. For 'arquivado' nothing is returned.
     """
     if current_date is None:
         current_date = date.today()
+
+    # --- Phase 5.2 gate ---
+    if process_state is not None:
+        if process_state not in VALID_PROCESS_STATES:
+            raise ValueError(
+                f"invalid process_state: {process_state!r} "
+                f"(expected one of {sorted(VALID_PROCESS_STATES)})"
+            )
+        if process_state == "arquivado":
+            return None
+        if process_state == "suspenso":
+            return {
+                "tipo": prazo_type,
+                "status": "suspenso",
+                "data_intimacao": intimation_date.isoformat(),
+                "fundamento_legal": "processo suspenso — prazos paralisados",
+                "process_state": process_state,
+            }
+        if process_state == "transito_em_julgado":
+            # Recursal deadlines are no longer valid; switch to CPC 523.
+            feriados = load_feriados(state, intimation_date.year)
+            if intimation_date.year != current_date.year:
+                feriados |= load_feriados(state, current_date.year)
+            deadline = calculate_prazo(
+                start_date=intimation_date,
+                days=_CUMPRIMENTO_VOLUNTARIO["dias"],
+                unit=_CUMPRIMENTO_VOLUNTARIO["unidade"],
+                feriados=feriados,
+            )
+            if current_date > deadline:
+                status = "vencido"
+            elif current_date == deadline:
+                status = "ultimo_dia"
+            else:
+                status = "em_prazo"
+            return {
+                "tipo": _CUMPRIMENTO_VOLUNTARIO["tipo"],
+                "fundamento_legal": _CUMPRIMENTO_VOLUNTARIO["fundamento"],
+                "data_intimacao": intimation_date.isoformat(),
+                "data_limite": deadline.isoformat(),
+                "dias": _CUMPRIMENTO_VOLUNTARIO["dias"],
+                "unidade": _CUMPRIMENTO_VOLUNTARIO["unidade"],
+                "status": status,
+                "process_state": process_state,
+                "note": (
+                    f"prazo recursal {prazo_type!r} ignorado porque o processo "
+                    f"já transitou em julgado; computado apenas o prazo de "
+                    f"cumprimento voluntário (CPC art. 523)."
+                ),
+            }
+        # "ativo" or "desconhecido" -> fall through to normal calculation
 
     prazo_info = get_standard_prazo(prazo_type)
     if not prazo_info:
@@ -234,7 +314,7 @@ def check_prazo_status(
     else:
         status = 'em_prazo'
 
-    return {
+    result = {
         'tipo': prazo_type,
         'fundamento_legal': prazo_info['fundamento'],
         'data_intimacao': intimation_date.isoformat(),
@@ -244,6 +324,9 @@ def check_prazo_status(
         'status': status,
         'dias_restantes': days_remaining,
     }
+    if process_state is not None:
+        result['process_state'] = process_state
+    return result
 
 
 def main():
