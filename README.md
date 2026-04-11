@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/brunobracaioli/juriscan/actions/workflows/ci.yml"><img src="https://github.com/brunobracaioli/juriscan/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="#instalação"><img src="https://img.shields.io/badge/plug--and--play-Claude_Code_Skill-blue?style=for-the-badge" alt="Claude Code Skill"/></a>
   <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+"/>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License"/></a>
