@@ -180,8 +180,16 @@ Phase 0 Step 0.4 introduz apenas o subagent `juriscan-echo` (selftest) e o esque
 Executar uma vez no início da sessão:
 
 ```bash
-SKILL_DIR="$(dirname "$(find ~/.claude/skills -name 'SKILL.md' -path '*/juriscan/*' 2>/dev/null | head -1)" 2>/dev/null)"
-[ -z "$SKILL_DIR" ] && SKILL_DIR="$(find . -name 'SKILL.md' -path '*/juriscan/*' -exec dirname {} \; 2>/dev/null | head -1)"
+# install.sh cria um symlink em ~/.claude/skills/juriscan apontando para a
+# cópia clonada do repo. Se o link existe, essa é a fonte de verdade.
+if [ -L "$HOME/.claude/skills/juriscan" ] || [ -d "$HOME/.claude/skills/juriscan" ]; then
+    SKILL_DIR="$HOME/.claude/skills/juriscan"
+else
+    # Fallback: rodando direto do repo sem instalar (dev mode)
+    SKILL_DIR="$(find -L . -maxdepth 3 -name 'SKILL.md' -path '*juriscan*' -exec dirname {} \; 2>/dev/null | head -1)"
+fi
+[ -z "$SKILL_DIR" ] && { echo "ERROR: could not locate juriscan skill. Run ./install.sh first."; exit 1; }
+echo "SKILL_DIR=$SKILL_DIR"
 
 python3 -c "import pypdf, jsonschema" 2>/dev/null || pip install pypdf pytesseract Pillow jsonschema
 ```
@@ -214,6 +222,19 @@ Para chunks ACÓRDÃO, também usar **Parsing Tripartite** de [prompt_templates.
 
 Referência de entidades: [brazilian_legal_entities.md](references/brazilian_legal_entities.md).
 Campos esperados por tipo: [piece_type_taxonomy.json](references/piece_type_taxonomy.json).
+
+**IMPORTANTE — como montar o `analyzed.json` final:** não reconstrua `chunks[]` do zero. Carregue o `index.json` existente (produzido pelo `extract_and_chunk.py`) e **ADICIONE** os campos semânticos extraídos (`fatos_relevantes`, `pedidos`, `valores`, `decisao`, `acordao_detail`, `jurisprudencia`, etc.) a cada chunk. Os campos técnicos já existentes — especialmente `index`, `label`, `char_count`, `chunk_file`, `primary_date`, `dates_found`, `page_range`, `ocr_confidence` — **devem** ser preservados, pois o `schema_validator.py` roda um integrity gate que exige correspondência 1:1 entre chunks do JSON e arquivos físicos em `chunks/`. Omitir `chunk_file` aborta a validação.
+
+Receita simples:
+```python
+import json
+idx = json.load(open('<output_dir>/index.json'))
+for chunk in idx['chunks']:
+    chunk_text = open(f"<output_dir>/{chunk['chunk_file']}").read()
+    # … rodar análise per-chunk, mesclar resultados no dict ...
+analyzed = {'analysis_version': '2.0', **idx, 'chunks': idx['chunks']}
+json.dump(analyzed, open('<output_dir>/analyzed.json','w'), ensure_ascii=False, indent=2)
+```
 
 Salvar resultado consolidado em `<output_dir>/analyzed.json`.
 
