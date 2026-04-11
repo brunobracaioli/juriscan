@@ -216,35 +216,77 @@ Verifica OCR quality, anomalias de metadata, lacunas de páginas. Flag chunks co
 
 ### Step 3: Per-Chunk Analysis
 
-Para **cada chunk** em `chunks/`, ler o arquivo e analisar usando o prompt **Análise Per-Chunk** de [prompt_templates.md](references/prompt_templates.md#1-análise-per-chunk-extração-estruturada).
+Esta é a etapa mais importante do pipeline. Toda a qualidade dos arquivos persistidos (`analyzed.json`, `risk.json`, `instances.json`, vault Obsidian) depende dela. **Não tome atalhos.**
 
-Para chunks ACÓRDÃO, também usar **Parsing Tripartite** de [prompt_templates.md](references/prompt_templates.md#3-parsing-tripartite-de-acórdão).
+Para **cada chunk** em `chunks/`:
+
+1. **Leia o arquivo do chunk** usando o tool Read (não invente conteúdo, não escreva script Python que hardcoda enrichments — leia o arquivo real).
+2. **Identifique o `tipo_peca`** consultando [piece_type_taxonomy.json](references/piece_type_taxonomy.json). Use o nome canônico exato (ex.: `"PETIÇÃO INICIAL"`, `"SENTENÇA"`, `"ACÓRDÃO"`) — não inventar variantes.
+3. **Aplique o prompt Análise Per-Chunk** de [prompt_templates.md](references/prompt_templates.md#1-análise-per-chunk-extração-estruturada) ao conteúdo do chunk e gere o objeto JSON populado **em sessão** (não em script Python externo).
+4. Para chunks `ACÓRDÃO`, também aplicar **Parsing Tripartite** de [prompt_templates.md](references/prompt_templates.md#3-parsing-tripartite-de-acórdão) e popular `acordao_detail`.
 
 Referência de entidades: [brazilian_legal_entities.md](references/brazilian_legal_entities.md).
-Campos esperados por tipo: [piece_type_taxonomy.json](references/piece_type_taxonomy.json).
 
-**IMPORTANTE — como montar o `analyzed.json` final:** não reconstrua `chunks[]` do zero. Carregue o `index.json` existente (produzido pelo `extract_and_chunk.py`) e **ADICIONE** os campos semânticos extraídos (`fatos_relevantes`, `pedidos`, `valores`, `decisao`, `acordao_detail`, `jurisprudencia`, etc.) a cada chunk. Os campos técnicos já existentes — especialmente `index`, `label`, `char_count`, `chunk_file`, `primary_date`, `dates_found`, `page_range`, `ocr_confidence` — **devem** ser preservados, pois o `schema_validator.py` roda um integrity gate que exige correspondência 1:1 entre chunks do JSON e arquivos físicos em `chunks/`. Omitir `chunk_file` aborta a validação.
+**REGRA CRÍTICA — proibido improvisar script Python que hardcoda enrichments.** Se você se pegar escrevendo um arquivo `build_analyzed.py` (ou similar) com dicionários `enrichments = {0: {...}, 1: {...}}`, **pare**. Isso é o sintoma do atalho que produz `analyzed.json` esqueleto. Em vez disso, leia cada chunk via Read tool, faça a análise no seu próprio raciocínio, e construa o dict diretamente em código curto que apenas mescla com `index.json`.
 
-Receita simples:
+**Campos mínimos obrigatórios** (toda execução real deve populá-los conforme o `tipo_peca`):
+
+| Campo | Quando popular | Comentário |
+|---|---|---|
+| `tipo_peca` | **Sempre** | Nome canônico da `piece_type_taxonomy.json` |
+| `partes` | Sempre que aparecerem nomes de partes | Object `{autor, reu, advogados[]}` |
+| `pedidos[]` | `PETIÇÃO INICIAL`, `RECONVENÇÃO`, recursos | Lista de strings |
+| `valores` | Quando houver R$ no texto | Object `{causa, condenacao, ...}` |
+| `fatos_relevantes[]` | Sempre que houver narrativa fática | Lista de strings |
+| `decisao` | `SENTENÇA`, `ACÓRDÃO`, `DESPACHO` | String com o dispositivo |
+| `acordao_detail` | `ACÓRDÃO` | Object tripartite (ementa, relatório, voto) + `votos_divergentes[]` |
+| `artigos_lei[]` | Sempre que citar artigos | Lista de strings (ex.: `"CPC art. 942"`) |
+| `jurisprudencia[]` | Sempre que citar precedente | Lista de objetos |
+| `prazos[]` | Quando houver intimação/publicação com data | Lista de objetos `{tipo, data_inicio, ...}` |
+
+**IMPORTANTE — como montar o `analyzed.json` final:** não reconstrua `chunks[]` do zero. Carregue o `index.json` existente (produzido pelo `extract_and_chunk.py`) e **ADICIONE** os campos semânticos a cada chunk. Os campos técnicos já existentes — especialmente `index`, `label`, `char_count`, `chunk_file`, `primary_date`, `dates_found`, `page_range`, `ocr_confidence` — **devem** ser preservados, pois o `schema_validator.py` roda um integrity gate que exige correspondência 1:1 entre chunks do JSON e arquivos físicos em `chunks/`. Omitir `chunk_file` aborta a validação.
+
+Receita correta:
 ```python
 import json
 idx = json.load(open('<output_dir>/index.json'))
 for chunk in idx['chunks']:
-    chunk_text = open(f"<output_dir>/{chunk['chunk_file']}").read()
-    # … rodar análise per-chunk, mesclar resultados no dict ...
+    # 1. Leia o conteúdo via Read tool ANTES desta linha — não dentro do loop
+    # 2. Analise mentalmente seguindo prompt_templates.md
+    # 3. Mescle os campos resultantes nesta iteração:
+    chunk['tipo_peca'] = '...'           # canônico
+    chunk['partes'] = {...}
+    chunk['pedidos'] = [...]
+    chunk['valores'] = {...}
+    chunk['fatos_relevantes'] = [...]
+    chunk['decisao'] = '...'             # quando aplicável
+    chunk['acordao_detail'] = {...}      # quando ACÓRDÃO
+    # ... demais campos conforme tipo_peca
 analyzed = {'analysis_version': '2.0', **idx, 'chunks': idx['chunks']}
 json.dump(analyzed, open('<output_dir>/analyzed.json','w'), ensure_ascii=False, indent=2)
 ```
 
+**Quando o chunker agrupa peças (issue #3):** se o chunker criar 1 arquivo físico contendo várias peças (ex.: laudo + sentença + apelação juntos), você tem duas opções:
+
+- **Opção A — split semântico (preferido):** mantenha o `chunk_file` original, mas adicione múltiplas entradas em `chunks[]` que apontem para ele, cada uma com `tipo_peca` próprio. Use índices repetidos com sufixo (`"0a"`, `"0b"`) ou mantenha índices únicos preservando `chunk_file` repetido. Importante: o integrity_gate aceita N entradas → 1 arquivo físico desde que `chunk_file` seja idêntico.
+- **Opção B — peça dominante:** identifique a peça mais importante do agrupamento (geralmente a decisória — sentença, acórdão) e use ela como `tipo_peca` do chunk; documente as outras em `fatos_relevantes` ou `acordao_detail`.
+
 Salvar resultado consolidado em `<output_dir>/analyzed.json`.
 
-### Step 4: Schema Validation
+### Step 4: Schema Validation + Content Quality Check
 
 ```bash
 python3 $SKILL_DIR/scripts/schema_validator.py --input <output_dir>/analyzed.json
 ```
 
 Se falhar, corrigir o JSON e re-validar. Repetir até válido.
+
+**Depois do schema OK, rode o sanity check de qualidade:**
+```bash
+python3 $SKILL_DIR/scripts/content_quality_check.py --input <output_dir>/analyzed.json
+```
+
+Esse script é **não-bloqueante** (sempre exit 0) — ele lista warnings em stderr quando os campos canônicos estão suspeitamente vazios. Se aparecerem mensagens tipo `WARN: 0/4 chunks têm campo 'tipo_peca' populado`, **volte ao Step 3** e re-faça a análise per-chunk preenchendo os campos faltantes. Não prossiga com analyzed.json esqueleto — os passos seguintes vão produzir vault Obsidian vazio.
 
 ### Step 5: Cross-Synthesis
 

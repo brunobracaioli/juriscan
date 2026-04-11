@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-04-11
+
+Quality patch addressing a friction surfaced by the first real-world smoke
+test of v3.0.0 in a fresh-user install. The legacy pipeline previously
+allowed Claude to take a shortcut during Step 3 (Per-Chunk Analysis) by
+writing a Python helper script that hardcoded a partial set of enrichments,
+producing an `analyzed.json` skeleton with `tipo_peca: null`, `partes: null`,
+`pedidos: []`, `valores: null` in every chunk. The schema validator passed
+because all those fields are technically optional, but the resulting
+Obsidian vault and downstream `risk.json` / `instances.json` were empty
+shells.
+
+### Added
+
+- `scripts/content_quality_check.py` — non-blocking sanity check that
+  emits stderr WARNs when canonical fields are suspiciously empty across
+  chunks. Default exit 0; pass `--strict` for exit 1 on warnings.
+- 21 tests in `tests/test_content_quality_check.py`
+
+### Changed
+
+- `SKILL.md` Step 3 (Per-Chunk Analysis) tightened with:
+  - Explicit ban on writing helper Python scripts that hardcode enrichments
+  - Mandatory minimum-fields table per `tipo_peca`
+  - Two explicit strategies (split semântico vs peça dominante) when the
+    regex chunker groups multiple peças in one file (issue #3)
+  - New Step 4 wires `content_quality_check.py` after `schema_validator.py`
+    so the orchestrator sees warnings and can re-do Step 3
+
+### Documentation
+
+- CHANGELOG.md updated (this file)
+
 ## [3.0.0] - 2026-04-11
 
 First stable release of the v3 hybrid architecture. Pipeline `legacy` is the
