@@ -15,6 +15,7 @@ from prazo_calculator import (
     calculate_prazo,
     get_standard_prazo,
     check_prazo_status,
+    _strip_accents,
 )
 
 
@@ -171,6 +172,30 @@ class TestGetStandardPrazo:
     def test_unknown(self):
         assert get_standard_prazo('xyz_inexistente') is None
 
+    # Phase A.1 — accent-insensitive matching
+    def test_apelacao_unaccented(self):
+        p = get_standard_prazo('apelacao')
+        assert p is not None
+        assert p['ato'] == 'apelação'
+        assert p['dias'] == 15
+
+    def test_contestacao_unaccented(self):
+        p = get_standard_prazo('contestacao')
+        assert p is not None
+        assert p['ato'] == 'contestação'
+        assert p['dias'] == 15
+
+    def test_embargos_declaracao_unaccented(self):
+        p = get_standard_prazo('embargos_declaracao')
+        assert p is not None
+        assert p['ato'] == 'embargos_declaração'
+        assert p['dias'] == 5
+
+    def test_recurso_especial_unaccented(self):
+        p = get_standard_prazo('recurso_especial')
+        assert p is not None
+        assert 'recurso_especial' in _strip_accents(p['ato'])
+
 
 class TestCheckPrazoStatus:
     def test_em_prazo(self):
@@ -272,3 +297,107 @@ class TestProcessStateAware:
         )
         assert result is not None
         assert 'process_state' not in result  # not added when param omitted
+
+
+# Phase A.2 — --analysis batch mode warnings
+import json as _json
+import subprocess
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / 'scripts' / 'prazo_calculator.py'
+
+
+def _run_analysis(analyzed_path: Path, output_path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), '--analysis', str(analyzed_path),
+         '--output', str(output_path)],
+        capture_output=True, text=True,
+    )
+
+
+class TestAnalysisBatchMode:
+    def test_emits_prazos_for_valid_input(self, tmp_path):
+        fixture = REPO_ROOT / 'tests' / 'fixtures' / 'sample_analyzed_with_prazos.json'
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(fixture, out)
+        assert r.returncode == 0, r.stderr
+        data = _json.loads(out.read_text(encoding='utf-8'))
+        # Fixture has 3 valid entries (1 accented + 2 unaccented relying on A.1)
+        assert len(data) == 3
+
+    def test_accepts_unaccented_tipos(self, tmp_path):
+        # apelacao + embargos_declaracao must be matched via _strip_accents (A.1)
+        fixture = REPO_ROOT / 'tests' / 'fixtures' / 'sample_analyzed_with_prazos.json'
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(fixture, out)
+        assert r.returncode == 0
+        data = _json.loads(out.read_text(encoding='utf-8'))
+        tipos = {p['tipo'] for p in data}
+        # All three input tipos must be present in the output
+        assert 'contestação' in tipos
+        assert 'apelacao' in tipos
+        assert 'embargos_declaracao' in tipos
+
+    def test_warns_on_unknown_tipo(self, tmp_path):
+        analyzed = tmp_path / 'analyzed.json'
+        analyzed.write_text(_json.dumps({
+            'chunks': [{
+                'index': 0,
+                'prazos': [
+                    {'tipo': 'contestação', 'data_inicio': '10/03/2025'},
+                    {'tipo': 'xpto_inexistente', 'data_inicio': '10/03/2025'},
+                ],
+            }],
+        }), encoding='utf-8')
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(analyzed, out)
+        assert r.returncode == 0
+        assert 'WARN' in r.stderr
+        assert 'xpto_inexistente' in r.stderr
+        data = _json.loads(out.read_text(encoding='utf-8'))
+        assert len(data) == 1  # only contestação survives
+
+    def test_exits_nonzero_when_all_dropped(self, tmp_path):
+        analyzed = tmp_path / 'analyzed.json'
+        analyzed.write_text(_json.dumps({
+            'chunks': [{
+                'index': 0,
+                'prazos': [
+                    {'tipo': 'xpto_um', 'data_inicio': '10/03/2025'},
+                    {'tipo': 'xpto_dois', 'data_inicio': '11/03/2025'},
+                ],
+            }],
+        }), encoding='utf-8')
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(analyzed, out)
+        assert r.returncode == 1
+        assert 'WARN' in r.stderr
+
+    def test_zero_prazos_no_drops_is_ok(self, tmp_path):
+        analyzed = tmp_path / 'analyzed.json'
+        analyzed.write_text(_json.dumps({
+            'chunks': [{'index': 0, 'prazos': []}],
+        }), encoding='utf-8')
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(analyzed, out)
+        assert r.returncode == 0
+        data = _json.loads(out.read_text(encoding='utf-8'))
+        assert data == []
+
+    def test_warns_on_missing_data_inicio(self, tmp_path):
+        analyzed = tmp_path / 'analyzed.json'
+        analyzed.write_text(_json.dumps({
+            'chunks': [{
+                'index': 0,
+                'prazos': [
+                    {'tipo': 'contestação'},  # no data_inicio
+                    {'tipo': 'apelação', 'data_inicio': '10/03/2025'},
+                ],
+            }],
+        }), encoding='utf-8')
+        out = tmp_path / 'prazos.json'
+        r = _run_analysis(analyzed, out)
+        assert r.returncode == 0
+        assert 'sem data_inicio' in r.stderr

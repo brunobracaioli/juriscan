@@ -20,8 +20,17 @@ import argparse
 import json
 import os
 import sys
+import unicodedata
 from datetime import date, timedelta
 from typing import Literal
+
+
+def _strip_accents(s: str) -> str:
+    """Remove diacritics from a string while preserving the base characters."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', s)
+        if unicodedata.combining(c) == 0
+    )
 
 REFERENCES_DIR = os.path.join(os.path.dirname(__file__), '..', 'references')
 
@@ -173,15 +182,16 @@ def get_standard_prazo(tipo: str) -> dict | None:
     with open(prazos_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    tipo_normalized = tipo.lower().strip().replace(' ', '_')
+    tipo_normalized = _strip_accents(tipo.lower().strip().replace(' ', '_'))
 
     for prazo in data.get('prazos_legais', []):
-        if prazo['ato'] == tipo_normalized:
+        if _strip_accents(prazo['ato']) == tipo_normalized:
             return prazo
 
     # Fuzzy match
     for prazo in data.get('prazos_legais', []):
-        if tipo_normalized in prazo['ato'] or prazo['ato'] in tipo_normalized:
+        ato_normalized = _strip_accents(prazo['ato'])
+        if tipo_normalized in ato_normalized or ato_normalized in tipo_normalized:
             return prazo
 
     return None
@@ -352,24 +362,61 @@ def main():
         with open(args.analysis, 'r', encoding='utf-8') as f:
             analysis = json.load(f)
 
+        from utils.dates import parse_brazilian_date
+
         prazos = []
-        for chunk in analysis.get('chunks', []):
-            for prazo in chunk.get('prazos', []):
+        unknown_tipo = 0
+        unparseable_date = 0
+        missing_start = 0
+        seen_any = False
+        for ci, chunk in enumerate(analysis.get('chunks', [])):
+            for pj, prazo in enumerate(chunk.get('prazos', [])):
+                seen_any = True
                 tipo = prazo.get('tipo', '')
                 start = prazo.get('data_inicio')
-                if start:
-                    from utils.dates import parse_brazilian_date
-                    d = parse_brazilian_date(start)
-                    if d:
-                        result = check_prazo_status(d, tipo, state=args.state)
-                        if result:
-                            prazos.append(result)
+                if not start:
+                    missing_start += 1
+                    print(
+                        f"WARN: chunk[{ci}].prazos[{pj}] tipo={tipo!r} sem data_inicio — pulando",
+                        file=sys.stderr,
+                    )
+                    continue
+                d = parse_brazilian_date(start)
+                if not d:
+                    unparseable_date += 1
+                    print(
+                        f"WARN: chunk[{ci}].prazos[{pj}] data_inicio={start!r} não parseável — pulando",
+                        file=sys.stderr,
+                    )
+                    continue
+                result = check_prazo_status(d, tipo, state=args.state)
+                if result is None:
+                    unknown_tipo += 1
+                    print(
+                        f"WARN: chunk[{ci}].prazos[{pj}] tipo={tipo!r} não reconhecido — pulando",
+                        file=sys.stderr,
+                    )
+                    continue
+                prazos.append(result)
 
         output_path = args.output or os.path.join(os.path.dirname(args.analysis), 'prazos.json')
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(prazos, f, ensure_ascii=False, indent=2)
 
+        dropped = unknown_tipo + unparseable_date + missing_start
+        if dropped > 0:
+            print(
+                f"WARN: {dropped} prazo(s) descartado(s) "
+                f"(tipo desconhecido: {unknown_tipo}, "
+                f"data não parseável: {unparseable_date}, "
+                f"sem data_inicio: {missing_start})",
+                file=sys.stderr,
+            )
         print(f"Calculated {len(prazos)} deadline(s). Output: {output_path}")
+
+        if seen_any and len(prazos) == 0:
+            # Input had prazos but everything was dropped — likely upstream bug
+            sys.exit(1)
     else:
         parser.print_help()
 
