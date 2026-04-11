@@ -1,5 +1,15 @@
 # Juriscan — Architecture
 
+> **v3.1.x note:** the legacy pipeline was significantly upgraded in
+> v3.1.0-legacy / v3.1.1 / v3.1.2 with a per-chunk file pattern
+> (`analyzed_init.py` + `merge_chunk_analysis.py`), an executive report
+> generator (`generate_report.py`), strategic recommendations with
+> verbatim evidence, and Lei 14.905/2024 monetary recalculation. See
+> `CHANGELOG.md` and the updated legacy pipeline flow in `CLAUDE.md`.
+> This document describes primarily the agents pipeline architecture,
+> which remains the long-term target but has not been validated end-to-end
+> against real PDFs yet.
+
 ## TL;DR
 
 Juriscan is a Claude Code skill that analyzes Brazilian legal proceedings.
@@ -136,7 +146,7 @@ scripts/
   prazo_calculator.py     CPC deadlines, state-aware
   obsidian_export.py      Obsidian vault with v3 views
   legacy/                 retired scripts still consumed by --pipeline=legacy
-tests/                    217+ pytest unit/integration tests
+tests/                    435+ pytest unit/integration tests (v3.1.2)
 docs/                     architecture.md, subagents.md, operations.md
 ```
 

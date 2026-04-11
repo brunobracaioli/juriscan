@@ -52,7 +52,15 @@ O JuriScan tem **dois pipelines de análise** que coexistem durante a transiçã
 
 O pipeline **legacy** é determinístico, rápido e tem cobertura de teste end-to-end com PDFs reais. É o caminho recomendado para a maioria dos casos.
 
-O pipeline **agents** adiciona uma camada de raciocínio semântico via 8 subagents nativos do Claude Code (segmenter, parser, advogado-autor, advogado-reu, auditor-processual, verificador, sintetizador). A infraestrutura está completa, mas a validação end-to-end com PDFs reais ainda está em andamento — ver [issue de validação](https://github.com/brunobracaioli/juriscan/issues). O flip de default para `agents` está previsto para `v3.1.0`.
+O pipeline **agents** adiciona uma camada de raciocínio semântico via 8 subagents nativos do Claude Code (segmenter, parser, advogado-autor, advogado-reu, auditor-processual, verificador, sintetizador). A infraestrutura está completa, mas a validação end-to-end com PDFs reais ainda está em andamento — ver [issue de validação](https://github.com/brunobracaioli/juriscan/issues). O flip de default para `agents` está previsto para versão futura, após validação.
+
+Desde **v3.1.0-legacy / v3.1.1 / v3.1.2**, o pipeline legacy ganhou:
+
+- 📝 **Relatório executivo único** (`REPORT.md`) — markdown consolidado com caixas de alerta (Art. 942 CPC, Lei 14.905/2024, prazos urgentes), tabela cronológica de peças, contradições com citações verbatim, risk assessment e recomendações estratégicas por polo
+- 🧩 **Padrão per-chunk file** — Claude faz um `Write chunks/NN.analysis.json` por peça (sem helper scripts hardcoded), com schema strict e merge determinístico
+- ✂️ **Split-semantic com herança de data** — quando o chunker regex agrupa várias peças num arquivo físico, cada peça vira uma entrada separada em `analyzed.chunks[]` com seu próprio `primary_date`
+- 🎯 **Recomendações estratégicas por polo** (`recommendations.json`) — 3-5 ações por polo com `evidence_quote` verbatim obrigatória e fundamentação legal
+- 💰 **Recálculo Lei 14.905/2024 automático** — detecta condenações cruzando o marco de 30/08/2024
 
 Detalhes técnicos: [`docs/architecture.md`](docs/architecture.md) · contratos por subagent: [`docs/subagents.md`](docs/subagents.md)
 
@@ -133,23 +141,42 @@ python3 scripts/extract_and_chunk.py --input processo.pdf --output ./analise/
 # Verificar integridade (OCR quality, anomalias)
 python3 scripts/integrity_check.py --input ./analise/
 
+# Criar skeleton analyzed.json (Step 3a do fluxo per-chunk)
+python3 scripts/analyzed_init.py --index ./analise/index.json --output ./analise/analyzed.json
+
+# Consolidar arquivos per-chunk (chunks/NN.analysis.json) → analyzed.json (Step 3c)
+python3 scripts/merge_chunk_analysis.py --analyzed ./analise/analyzed.json --chunks-dir ./analise/chunks/ --output ./analise/analyzed.json
+
+# Validar schema + quality check com plano de retry per-chunk
+python3 scripts/schema_validator.py --input ./analise/analyzed.json
+python3 scripts/content_quality_check.py --input ./analise/analyzed.json --strict --per-chunk-retry-plan
+
 # Calcular prazos CPC
 python3 scripts/prazo_calculator.py --date 2025-03-15 --tipo contestação --state SP
 
 # Rastrear argumentos entre instâncias
 python3 scripts/instance_tracker.py --analysis ./analise/analyzed.json --output ./analise/instances.json
 
-# Detectar contradições
-python3 scripts/contradiction_report.py --analysis ./analise/analyzed.json --output ./analise/contradictions.json
+# Detectar contradições (legacy)
+python3 scripts/legacy/contradiction_report.py --analysis ./analise/analyzed.json --output ./analise/contradictions.json
 
-# Avaliar risco litigioso
-python3 scripts/risk_scorer.py --analysis ./analise/analyzed.json --output ./analise/risk.json
+# Avaliar risco litigioso (legacy)
+python3 scripts/legacy/risk_scorer.py --analysis ./analise/analyzed.json --output ./analise/risk.json
 
-# Validar output contra schema
-python3 scripts/schema_validator.py --input ./analise/analyzed.json
+# Aplicar recálculo Lei 14.905/2024 (Step 8.5, in-place)
+python3 scripts/finalize_legacy.py --input ./analise/analyzed.json --inplace
 
 # Exportar para Obsidian
-python3 scripts/obsidian_export.py --analysis ./analise/analyzed.json --output ./vault/
+python3 scripts/obsidian_export.py --analysis ./analise/analyzed.json --output ./analise/obsidian/
+
+# Gerar relatório executivo consolidado (REPORT.md — o "uau")
+python3 scripts/generate_report.py \
+  --analyzed ./analise/analyzed.json \
+  --contradictions ./analise/contradictions.json \
+  --prazos ./analise/prazos.json \
+  --risk ./analise/risk.json \
+  --recommendations ./analise/recommendations.json \
+  --output ./analise/REPORT.md
 ```
 
 </details>
@@ -240,7 +267,7 @@ python -m pytest tests/ -v
 ```
 
 ```
-============================= 302 passed in 5.33s ==============================
+============================= 435 passed in 7.81s ==============================
 ```
 
 ---

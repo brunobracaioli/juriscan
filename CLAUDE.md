@@ -18,15 +18,21 @@ This repository IS the skill directory. Clone it to `~/.claude/skills/juriscan` 
 pip install -r requirements.txt
 python -m pytest tests/ -v
 
-# Scripts (all in scripts/)
+# Scripts (legacy pipeline — default)
 python3 scripts/extract_and_chunk.py --input <pdf> --output <dir>
 python3 scripts/integrity_check.py --input <dir>
+python3 scripts/analyzed_init.py --index <dir>/index.json --output <dir>/analyzed.json
+python3 scripts/merge_chunk_analysis.py --analyzed <dir>/analyzed.json --chunks-dir <dir>/chunks/ --output <dir>/analyzed.json
+python3 scripts/schema_validator.py --input <analyzed.json>
+python3 scripts/content_quality_check.py --input <analyzed.json> --strict --per-chunk-retry-plan
 python3 scripts/prazo_calculator.py --date 2025-03-15 --tipo contestação --state SP
 python3 scripts/instance_tracker.py --analysis <analyzed.json> --output <instances.json>
 python3 scripts/legacy/contradiction_report.py --analysis <analyzed.json> --output <contradictions.json>
 python3 scripts/legacy/risk_scorer.py --analysis <analyzed.json> --output <risk.json>
-python3 scripts/schema_validator.py --input <analyzed.json>
+python3 scripts/finalize_legacy.py --input <analyzed.json> --inplace
 python3 scripts/obsidian_export.py --analysis <analyzed.json> --output <vault_dir>
+python3 scripts/agent_io.py validate --agent recommendations --input <recommendations.json>
+python3 scripts/generate_report.py --analyzed <analyzed.json> --contradictions <c.json> --prazos <p.json> --risk <r.json> --recommendations <rec.json> --output REPORT.md
 
 # Agents pipeline (opt-in during transition; see docs/architecture.md)
 python3 scripts/agent_io.py new-run
@@ -45,10 +51,13 @@ python3 scripts/migrate_v2_to_v3.py --input <v2.json> --output <v3.json>
 
 ### Two pipelines (during transition)
 
-1. **Legacy** (`--pipeline=legacy`, current default) — 10-stage deterministic
-   pipeline from `extract_and_chunk.py` through regex chunking, per-chunk analysis
-   by Claude via prompt templates, and scripts/legacy for contradiction_report
-   and risk_scorer.
+1. **Legacy** (`--pipeline=legacy`, current default — validated, v3.1.2) —
+   per-chunk file pattern: `analyzed_init.py` creates skeleton, Claude writes
+   one `chunks/NN.analysis.json` per chunk, `merge_chunk_analysis.py`
+   consolidates with schema validation. Pipeline then runs contradiction
+   detection, instance tracking, prazo calculation, risk scoring, Lei
+   14.905 recalculation, Obsidian export, and finally `generate_report.py`
+   which produces `REPORT.md` — the literal final response to the user.
 2. **Agents** (`--pipeline=agents`, opt-in) — hybrid pipeline where semantic
    reasoning is delegated to native Claude Code subagents in `.claude/agents/`
    orchestrated by SKILL.md via the Task tool. Python still owns every
@@ -56,12 +65,23 @@ python3 scripts/migrate_v2_to_v3.py --input <v2.json> --output <v3.json>
    See `docs/architecture.md` for the full flow and `docs/subagents.md` for
    per-subagent contracts.
 
-### Legacy 10-Stage Pipeline
+### Legacy Pipeline (v3.1.2 — per-chunk file pattern)
 
 ```
-PDF → [1] Extraction → [2] Integrity Check → [3] Chunking → [4] Per-Chunk Analysis (Claude)
-→ [5] Schema Validation → [6] Cross-Synthesis (Claude) → [7] Prazo Calculation
-→ [8] Risk Scoring → [9] Output → [10] Obsidian Export
+PDF → [1] Extraction → [2] Integrity Check
+→ [3a] analyzed_init.py  (skeleton from index.json)
+→ [3b] Per-chunk analysis  (Claude Writes chunks/NN.analysis.json — one per chunk, no helper scripts)
+→ [3c] merge_chunk_analysis.py  (consolidates, renumbers split-semantic to integer indices)
+→ [4] Schema Validation + content_quality_check.py --strict --per-chunk-retry-plan
+→ [5] Cross-Synthesis (contradiction_report, instance_tracker)
+→ [6] Prazo Calculation
+→ [7] Risk Scoring
+→ [8] Consolidate
+→ [8.5] finalize_legacy.py  (Lei 14.905/2024 monetary recalculation)
+→ [9] Obsidian Export
+→ [9a] Strategic Recommendations (recommendations.json — evidence_quote obrigatória)
+→ [9b] generate_report.py  (REPORT.md — executive markdown consolidado)
+→ [10] Present REPORT.md literally as final response (zero paraphrase, zero additions)
 ```
 
 ### Agents Pipeline (see SKILL.md § Agents Pipeline)
@@ -81,14 +101,20 @@ Claude Code subscription. Every subagent output is JSON-schema-validated by
 
 | Script | Purpose |
 |---|---|
-| `extract_and_chunk.py` | PDF extraction (pdftotext→pypdf→OCR), intelligent chunking by legal piece, OCR confidence, page mapping |
+| `extract_and_chunk.py` | PDF extraction (pdftotext→pypdf→OCR), regex chunking by legal piece, OCR confidence, page mapping |
 | `integrity_check.py` | OCR quality scoring, metadata anomaly detection, page gap detection |
-| `prazo_calculator.py` | CPC Art. 219-232 deadline calculation, feriados forenses, recesso forense |
+| `analyzed_init.py` | **v3.1.0-legacy** — creates analyzed.json skeleton from index.json preserving technical fields |
+| `merge_chunk_analysis.py` | **v3.1.0-legacy** — consolidates `chunks/NN.analysis.json` files with schema validation; renumbers split-semantic (v3.1.1) and inherits primary_date (v3.1.2) |
+| `content_quality_check.py` | **v3.0.1** — non-blocking quality check with per-chunk retry plan (v3.1.0-legacy) and art. 942 grounding enforcement |
+| `prazo_calculator.py` | CPC Art. 219-232 deadline calculation, feriados forenses, recesso forense, accent-insensitive |
 | `instance_tracker.py` | Classify pieces by judicial instance (1ª inst→TJ→STJ→STF), argument evolution tracking |
-| `contradiction_report.py` | Structural contradiction detection (values, dates, facts, jurisprudence) |
-| `risk_scorer.py` | Procedural risk, merit indicators, monetary exposure scoring |
-| `schema_validator.py` | Validates JSON output against `references/output_schema.json` |
+| `legacy/contradiction_report.py` | Structural contradiction detection (values, dates, facts, jurisprudence) — no false positives on legitimate partial reform |
+| `legacy/risk_scorer.py` | Procedural risk, merit indicators, monetary exposure scoring |
+| `finalize_legacy.py` | **v3.1.0-legacy** — standalone Lei 14.905/2024 monetary recalculation (detects condenação crossing 2024-08-30) |
+| `schema_validator.py` | Validates JSON output against `references/output_schema_v2.json` + integrity gate |
 | `obsidian_export.py` | Generates Obsidian vault with 7 main views + piece notes + stub notes |
+| `generate_report.py` | **v3.1.0-legacy centerpiece** — executive markdown report consolidating all pipeline outputs; chronological sort + word-safe truncate + dict factor handling |
+| `agent_io.py` | Schema validation CLI for all agent outputs (segmenter, parser, advogados, auditor, verificador, sintetizador, **recommendations**) |
 
 ### Utils (`scripts/utils/`)
 
@@ -103,8 +129,11 @@ Claude Code subscription. Every subagent output is JSON-schema-validated by
 
 | File | Purpose |
 |---|---|
-| `output_schema.json` | JSON Schema v2 — full output specification with all analysis fields |
-| `prompt_templates.md` | All 7 prompt templates used by Claude during analysis |
+| `output_schema_v2.json` | JSON Schema v2 — full analyzed.json output specification (legacy default) |
+| `output_schema_v3.json` | JSON Schema v3 — superset for agents pipeline (perspectives, auditor_findings, verifications) |
+| `chunk_analysis_schema.json` | **v3.1.0-legacy** — schema for `chunks/NN.analysis.json` files (strict, `additionalProperties: false`); includes `primary_date` override for split-semantic (v3.1.2) |
+| `agent_schemas/recommendations_output.json` | **v3.1.0-legacy** — schema for recommendations.json (evidence_quote required per item) |
+| `prompt_templates.md` | All 8 prompt templates (7 original + strategic recommendations v3.1.0-legacy) |
 | `piece_type_taxonomy.json` | 27 piece types with phase, polo, instance, expected fields |
 | `cpc_prazos.json` | 14 standard CPC deadlines with exceptions (Fazenda, JEC, Defensoria) |
 | `feriados_forenses.json` | National + mobile (Easter-based) + state court holidays (SP,RJ,MG,RS,PR,SC,BA,PE) |
