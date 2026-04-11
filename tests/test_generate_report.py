@@ -517,6 +517,36 @@ def test_render_risk_assessment_none():
     assert render_risk_assessment(None) == ""
 
 
+def test_infer_current_instance_picks_latest_chronological():
+    """v3.1.4: header instance reflects the most recent piece's instancia."""
+    from scripts.generate_report import _infer_current_instance
+    chunks = [
+        {"primary_date": "20/07/2024", "instancia": "1a_instancia"},
+        {"primary_date": "12/12/2024", "instancia": "1a_instancia"},
+        {"primary_date": "18/03/2025", "instancia": "tj"},
+    ]
+    assert _infer_current_instance(chunks) == "2ª instância (TJ)"
+
+
+def test_infer_current_instance_empty_chunks():
+    from scripts.generate_report import _infer_current_instance
+    assert _infer_current_instance([]) is None
+
+
+def test_render_header_uses_inferred_instance():
+    """v3.1.4: regression for the smoke test showing '(não identificada)'."""
+    analyzed = {
+        "processo_number": "1034567-89.2024.8.26.0100",
+        "chunks": [
+            {"primary_date": "12/12/2024", "instancia": "1a_instancia", "tipo_peca": "SENTENÇA"},
+            {"primary_date": "18/03/2025", "instancia": "tj", "tipo_peca": "ACÓRDÃO"},
+        ],
+    }
+    out = render_header(analyzed, None)
+    assert "2ª instância (TJ)" in out
+    assert "(não identificada)" not in out
+
+
 def test_render_risk_assessment_empty_factors_shows_dash():
     """v3.1.3: empty factor lists render as '—' instead of blank cell."""
     risk = {

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-04-11
+
+Bug fixes uncovered by the v3.1.3 smoke test. One critical (merge reentrancy),
+one cosmetic (header instance).
+
+### Fixed
+
+- **merge_chunk_analysis.py is now idempotent (CRITICAL)** — after a
+  successful merge, the chunks array is renumbered to sequential integers
+  (0..N-1 per the v3.1.1 fix for schema compliance). Re-running merge on
+  that post-merged file used to fail with "chunk[4] has no matching
+  chunks/04.analysis.json" because the Write files were named after the
+  *original* physical indices (0, 1, 2, 2a, 2b, 3, 3a), not the renumbered
+  ones. The SKILL.md Step 4 retry loop hit this every time it needed to
+  re-run merge after fixing a chunk. v3.1.4 detects post-merged state
+  (chunks with `original_index` or populated semantic fields) and rebuilds
+  the skeleton from `index.json` in the same directory, making merge fully
+  reentrant.
+- **Header "Instância atual" now inferred from chunks** — generate_report
+  used to fall back to `(não identificada)` whenever `metadata.instancia_atual`
+  was missing, even when the chunks clearly had `instancia` set. v3.1.4
+  adds `_infer_current_instance()` which picks the last chronological
+  piece's `instancia` and maps it to human labels (`tj` → "2ª instância
+  (TJ)", etc.). DD/MM/YYYY sort uses an ISO key so chronology is correct.
+
+### Tests
+
+- 443 passed, 1 skipped (was 438).
+- New regressions: `test_merge_is_idempotent_when_index_present`,
+  `test_merge_idempotent_with_split_semantic`,
+  `test_infer_current_instance_picks_latest_chronological`,
+  `test_infer_current_instance_empty_chunks`,
+  `test_render_header_uses_inferred_instance`.
+
 ## [3.1.3] - 2026-04-11
 
 Cosmetic polish on the executive report. Closes the two known issues left

@@ -73,6 +73,32 @@ def _load_schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+def _looks_post_merged(analyzed: dict) -> bool:
+    """Detect if analyzed.json is already in a merged state.
+
+    After a successful merge, chunks have semantic fields populated,
+    no `_pending_analysis` markers, and may have been renumbered (the
+    number of chunks may exceed the original physical chunk count due
+    to split-semantic). If we re-run merge against such a file, the
+    loop will try to match renumbered indices (4, 5, 6) against
+    non-existent chunks/04.analysis.json files. Re-initialize from
+    index.json instead.
+    """
+    chunks = analyzed.get("chunks") or []
+    if not chunks:
+        return False
+    has_pending = any(ch.get("_pending_analysis") for ch in chunks)
+    if has_pending:
+        return False
+    # Post-merge state markers: original_index set, or semantic fields present
+    for ch in chunks:
+        if "original_index" in ch:
+            return True
+        if ch.get("tipo_peca") or ch.get("resumo") or ch.get("decisao"):
+            return True
+    return False
+
+
 def _validate(data: dict, schema: dict, source: str) -> list[str]:
     """Validate a per-chunk analysis file against the schema. Returns errors."""
     try:
@@ -304,6 +330,32 @@ def main(argv: list[str] | None = None) -> int:
     except json.JSONDecodeError as e:
         print(f"ERROR: invalid JSON in {analyzed_path}: {e}", file=sys.stderr)
         return 2
+
+    # v3.1.4: idempotency — if analyzed.json is already in post-merged state
+    # (chunks without _pending_analysis markers, possibly renumbered), rebuild
+    # the skeleton from index.json in the same directory. This lets the retry
+    # loop in SKILL.md Step 4 re-run merge without needing a manual reset.
+    if _looks_post_merged(analyzed):
+        index_path = analyzed_path.parent / "index.json"
+        if index_path.exists():
+            print(
+                f"[merge_chunk_analysis] detected post-merged state — "
+                f"rebuilding skeleton from {index_path.name}",
+                file=sys.stderr,
+            )
+            try:
+                from analyzed_init import build_skeleton  # type: ignore
+            except ImportError:
+                sys.path.insert(0, str(Path(__file__).parent))
+                from analyzed_init import build_skeleton  # type: ignore
+            index_data = json.loads(index_path.read_text(encoding="utf-8"))
+            analyzed = build_skeleton(index_data)
+        else:
+            print(
+                f"WARN: analyzed.json appears post-merged but {index_path} "
+                f"not found — matching by chunk_file basename as fallback",
+                file=sys.stderr,
+            )
 
     try:
         schema = _load_schema()

@@ -115,6 +115,46 @@ def _truncate_words(text: Any, max_chars: int, ellipsis: str = "…") -> str:
     return cut.rstrip(" ,.;:") + ellipsis
 
 
+_INSTANCE_LABELS = {
+    "1a_instancia": "1ª instância",
+    "primeira_instancia": "1ª instância",
+    "tj": "2ª instância (TJ)",
+    "trf": "2ª instância (TRF)",
+    "trt": "2ª instância (TRT)",
+    "stj": "STJ",
+    "stf": "STF",
+    "tst": "TST",
+}
+
+
+def _infer_current_instance(chunks: list[dict]) -> str | None:
+    """v3.1.4: infer current instance from the last chronological piece.
+
+    generate_report already sorts pieces chronologically for rendering, but
+    the header is built before that. We do a mini-sort here by primary_date
+    and pick the instancia of the latest piece.
+    """
+    if not chunks:
+        return None
+    dated = [c for c in chunks if c.get("primary_date") and c.get("instancia")]
+    if not dated:
+        for c in reversed(chunks):
+            inst = c.get("instancia")
+            if inst:
+                return _INSTANCE_LABELS.get(inst, inst)
+        return None
+    def _iso_key(c: dict) -> str:
+        d = c.get("primary_date") or ""
+        # Accept DD/MM/YYYY or YYYY-MM-DD
+        if "/" in d and len(d) == 10:
+            dd, mm, yy = d.split("/")
+            return f"{yy}-{mm}-{dd}"
+        return d
+    dated.sort(key=_iso_key)
+    inst = dated[-1].get("instancia")
+    return _INSTANCE_LABELS.get(inst, inst) if inst else None
+
+
 def _factor_to_text(factor: Any) -> str:
     """Render a risk factor, which may be a string or a dict, as plain text.
 
@@ -219,7 +259,7 @@ def render_header(analyzed: dict, risk: dict | None) -> str:
         "(em andamento)",
     )
 
-    instance = metadata.get("instancia_atual") or "(não identificada)"
+    instance = metadata.get("instancia_atual") or _infer_current_instance(chunks) or "(não identificada)"
 
     risk_badge = ""
     if risk:

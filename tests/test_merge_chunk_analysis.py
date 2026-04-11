@@ -481,6 +481,101 @@ def test_merge_output_passes_integer_index_contract(tmp_path):
         assert type(ch["index"]) is int  # noqa: E721
 
 
+def test_merge_is_idempotent_when_index_present(tmp_path):
+    """v3.1.4: re-running merge on an already-merged analyzed.json should
+    rebuild the skeleton from index.json rather than failing because of
+    post-merge renumbering."""
+    chunks_dir = tmp_path / "chunks"
+    chunks_dir.mkdir()
+    # Write physical chunk text files so integrity gate is happy if invoked
+    (chunks_dir / "00-peticao-inicial.txt").write_text("x" * 8000)
+    (chunks_dir / "01-sentenca.txt").write_text("x" * 5000)
+
+    # index.json mirrors the skeleton shape
+    index = {
+        "analysis_version": "2.0",
+        "processo_number": "1234567-89.2024.8.26.0100",
+        "total_chunks": 2,
+        "chunks": [
+            {
+                "index": 0,
+                "label": "PETIÇÃO INICIAL",
+                "char_count": 8000,
+                "chunk_file": "chunks/00-peticao-inicial.txt",
+            },
+            {
+                "index": 1,
+                "label": "SENTENÇA",
+                "char_count": 5000,
+                "chunk_file": "chunks/01-sentenca.txt",
+            },
+        ],
+    }
+    (tmp_path / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+    skel_path = tmp_path / "analyzed.json"
+    skel_path.write_text(json.dumps(_skeleton()), encoding="utf-8")
+
+    _write_analysis(chunks_dir, "00", _sample_peticao(0))
+    _write_analysis(chunks_dir, "01", {"index": 1, "tipo_peca": "SENTENÇA"})
+
+    out = tmp_path / "analyzed.json"
+    # First merge
+    rc = main(["--analyzed", str(skel_path), "--chunks-dir", str(chunks_dir), "--output", str(out)])
+    assert rc == 0
+
+    # Second merge — should detect post-merge state and rebuild from index.json
+    rc2 = main(["--analyzed", str(out), "--chunks-dir", str(chunks_dir), "--output", str(out)])
+    assert rc2 == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["chunks"]) == 2
+    assert data["chunks"][0]["tipo_peca"] == "PETIÇÃO INICIAL"
+
+
+def test_merge_idempotent_with_split_semantic(tmp_path):
+    """v3.1.4: idempotency works even when split-semantic creates extra rows."""
+    chunks_dir = tmp_path / "chunks"
+    chunks_dir.mkdir()
+    (chunks_dir / "00-peticao-inicial.txt").write_text("x" * 8000)
+    (chunks_dir / "01-sentenca.txt").write_text("x" * 5000)
+
+    index = {
+        "analysis_version": "2.0",
+        "processo_number": "1234567-89.2024.8.26.0100",
+        "total_chunks": 2,
+        "chunks": [
+            {"index": 0, "label": "PETIÇÃO INICIAL", "char_count": 8000, "chunk_file": "chunks/00-peticao-inicial.txt"},
+            {"index": 1, "label": "SENTENÇA", "char_count": 5000, "chunk_file": "chunks/01-sentenca.txt"},
+        ],
+    }
+    (tmp_path / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+    skel_path = tmp_path / "analyzed.json"
+    skel_path.write_text(json.dumps(_skeleton()), encoding="utf-8")
+
+    _write_analysis(chunks_dir, "00", _sample_peticao(0))
+    _write_analysis(chunks_dir, "01", {"index": 1, "tipo_peca": "SENTENÇA"})
+    _write_analysis(chunks_dir, "01a", {
+        "index": "1a",
+        "tipo_peca": "ACÓRDÃO",
+        "chunk_file_override": "chunks/01-sentenca.txt",
+    })
+
+    out = tmp_path / "analyzed.json"
+    assert main(["--analyzed", str(skel_path), "--chunks-dir", str(chunks_dir), "--output", str(out)]) == 0
+    data1 = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data1["chunks"]) == 3  # 2 physical + 1 split
+
+    # Re-run merge on post-merged file — must still produce 3 chunks, not fail
+    assert main(["--analyzed", str(out), "--chunks-dir", str(chunks_dir), "--output", str(out)]) == 0
+    data2 = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data2["chunks"]) == 3
+    types = [c.get("tipo_peca") for c in data2["chunks"]]
+    assert "PETIÇÃO INICIAL" in types
+    assert "SENTENÇA" in types
+    assert "ACÓRDÃO" in types
+
+
 def test_cli_allow_missing(tmp_path):
     chunks_dir = tmp_path / "chunks"
     chunks_dir.mkdir()
