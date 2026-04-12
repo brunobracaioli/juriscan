@@ -85,7 +85,23 @@ Detalhes técnicos: [`docs/architecture.md`](docs/architecture.md) · contratos 
 
 ## Instalação
 
-### Clone e instale (uma vez)
+### Instalação automática via Claude Code (recomendada)
+
+Abra o Claude Code em qualquer pasta e cole o prompt abaixo:
+
+```
+Clone o repositório https://github.com/brunobracaioli/juriscan.git em ~/.claude/skills/juriscan e rode o ./install.sh para instalar a skill. Se as dependências de sistema (poppler-utils, tesseract-ocr, tesseract-ocr-por) não estiverem instaladas, instale-as também.
+```
+
+O Claude vai executar todos os passos automaticamente. Quando terminar:
+
+1. **Saia do Claude Code** (digite `/exit` ou `Ctrl+C`)
+2. **Reabra o Claude Code** na pasta onde estão seus PDFs
+3. Digite `/juriscan processo.pdf` e pronto
+
+> **Por que precisa reiniciar?** O Claude Code descobre skills disponíveis ao iniciar a sessão. A skill recém-instalada só aparece na próxima sessão.
+
+### Instalação manual (alternativa)
 
 ```bash
 git clone https://github.com/brunobracaioli/juriscan.git ~/.claude/skills/juriscan
